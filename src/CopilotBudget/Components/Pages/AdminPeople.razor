@@ -106,15 +106,14 @@ else
                                     @if (p.GitHubId is not null) { <div class="muted small" title="GitHub's user ID: matching survives a renamed account">GitHub ID @p.GitHubId</div> }
                                 </td>
                                 <td class="email-cell">
-                                    @if (p.HasGitHubAccount && Session.CanManageIntegration)
-                                    {
-                                        <input type="email" value="@p.Email" placeholder="name@company.com" aria-label="@($"Work email for {p.Login}")"
-                                               @onchange="e => Run(() => Identities.SetEmailAsync(Session.User!.Id, p.Id, e.Value?.ToString()))" />
-                                    }
-                                    else
-                                    {
-                                        <span class="secondary small">@p.Email</span>
-                                    }
+                                    <div class="role-cell">
+                                        <span class="@(p.Email is null ? "muted small" : "secondary small")">@(p.Email ?? "None")</span>
+                                        @if (p.HasGitHubAccount && Session.CanManageIntegration)
+                                        {
+                                            <button type="button" class="btn ghost sm icon-btn" title="@($"Edit {p.Login}'s work email")" aria-label="@($"Edit {p.Login}'s work email")"
+                                                    @onclick="() => _editingEmail = p"><Icon Name="pencil" Size="15" /></button>
+                                        }
+                                    </div>
                                     <div class="muted small">
                                         @if (p.EntraObjectId is not null) { <span title="Signs in with this Microsoft account">✓ Microsoft account linked</span> }
                                         else if (p.Email is null) { <span>No email yet, can't match a sign-in</span> }
@@ -281,6 +280,11 @@ else
         </div>
     </div>
 
+    @if (_editingEmail is not null)
+    {
+        <EditEmailDialog Person="_editingEmail" OnClose="() => _editingEmail = null" OnSaved="EmailSaved" />
+    }
+
     @if (_editingRoles is not null)
     {
         <EditRolesDialog Person="_editingRoles" OnClose="() => _editingRoles = null" OnSaved="RolesSaved" />
@@ -302,6 +306,13 @@ else
     private bool _busy;
     private int? _confirmLeave;
     private AppUser? _editingRoles;
+    private AppUser? _editingEmail;
+
+    private async Task EmailSaved(OpResult result)
+    {
+        _editingEmail = null;
+        await ShowAsync(result);
+    }
 
     private async Task RolesSaved(OpResult result)
     {

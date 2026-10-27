@@ -1,0 +1,73 @@
+@* Admin dialog: set or clear the work email used to match a GitHub user to their Microsoft sign-in. *@
+@inject IdentityLinkService Identities
+@inject UserSession Session
+
+<div class="modal-backdrop" @onclick="Cancel">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="email-dialog-title"
+         @onclick:stopPropagation="true" @onkeydown="OnKeyDown">
+        <div class="modal-header">
+            <h2 id="email-dialog-title">Work email for @Person.Login</h2>
+            <button class="btn ghost sm" type="button" aria-label="Close" @onclick="Cancel"><Icon Name="x" Size="16" /></button>
+        </div>
+
+        <div class="modal-to">
+            <Person User="Person" Size="32" ShowLogin="true" />
+        </div>
+
+        <form @onsubmit="Save" class="mt">
+            <div class="field">
+                <label for="work-email">Work email</label>
+                <input id="work-email" type="email" @bind="_email" @bind:event="oninput" placeholder="name@company.com" autocomplete="off" />
+                <div class="hint">
+                    When someone signs in with Microsoft using this email, they're linked to this GitHub user.
+                    @if (Person.EmailSource == "github-saml") { <span>The current one came from GitHub SSO; a sync may set it again.</span> }
+                    Leave it empty to clear it.
+                </div>
+            </div>
+
+            @if (_error is not null)
+            {
+                <div class="hint" role="alert" style="color:#f07a7a">@_error</div>
+            }
+            <div class="modal-actions">
+                <button class="btn ghost" type="button" @onclick="Cancel">Cancel</button>
+                <button class="btn primary" type="submit" disabled="@(_busy || Unchanged)">Save email</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public AppUser Person { get; set; } = default!;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<OpResult> OnSaved { get; set; }
+
+    private string _email = "";
+    private bool _busy;
+    private string? _error;
+
+    private bool Unchanged => string.Equals(_email.Trim(), Person.Email ?? "", StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnInitialized() => _email = Person.Email ?? "";
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await Cancel();
+    }
+
+    private Task Cancel() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private async Task Save()
+    {
+        if (_busy || Unchanged) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var result = await Identities.SetEmailAsync(Session.User!.Id, Person.Id, _email);
+            if (result.Ok) await OnSaved.InvokeAsync(result);
+            else _error = result.Message;
+        }
+        finally { _busy = false; }
+    }
+}
