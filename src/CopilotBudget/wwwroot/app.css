@@ -1122,3 +1122,16 @@ span.role-chip { cursor: default; }
 }
 .setup-list li.done .setup-mark { background: rgba(12, 163, 12, 0.15); border-color: var(--good); color: var(--good); }
 .setup-list li.todo .setup-mark { background: rgba(250, 178, 25, 0.12); border-color: var(--warning); color: var(--warning); }
+
+/* Searchable person picker (UserPicker). */
+.picker { position: relative; flex: 1; min-width: 220px; }
+.picker input { width: 100%; }
+.picker-list {
+    position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 4px; list-style: none;
+    max-height: 280px; overflow-y: auto; background: var(--surface-2); border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.picker-list li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.picker-list li.active { background: var(--accent-soft); }
+.picker-list li .picker-name { font-weight: 550; }
+.picker-list li.picker-empty { cursor: default; }

@@ -242,13 +242,8 @@ else
                             </div>
                             @if (Session.CanManageIntegration)
                             {
-                                <select @bind="_linkTo[p.Id]" aria-label="@($"GitHub user for {p.Email}")">
-                                    <option value="0">Choose GitHub user…</option>
-                                    @foreach (var g in _people.Where(g => g.HasGitHubAccount && g.EntraObjectId is null && !g.IsDisabled))
-                                    {
-                                        <option value="@g.Id">@g.Login@(g.Name is null ? "" : $" ({g.Name})")</option>
-                                    }
-                                </select>
+                                <UserPicker Options="LinkableGitHubUsers" Value="_linkTo.GetValueOrDefault(p.Id)" ValueChanged="v => _linkTo[p.Id] = v"
+                                            Label="@($"GitHub user for {p.Email}")" Placeholder="Search GitHub users" />
                                 <button class="btn primary sm" disabled="@(_linkTo.GetValueOrDefault(p.Id) == 0)"
                                         @onclick="() => Run(() => Identities.LinkAsync(Session.User!.Id, p.Id, _linkTo.GetValueOrDefault(p.Id)))">Link</button>
                             }
@@ -298,6 +293,9 @@ else
     private List<Departure> _departures = [];
     private List<MemberBudget> _seatHolders = [];
     private readonly Dictionary<int, int> _linkTo = [];
+
+    /// <summary>GitHub users nobody has signed in as yet, so a Microsoft sign-in can be linked to them.</summary>
+    private IEnumerable<AppUser> LinkableGitHubUsers => _people.Where(g => g.HasGitHubAccount && g.EntraObjectId is null && !g.IsDisabled);
     private readonly Dictionary<int, int> _reassignTo = [];
     private string _filter = "";
     private bool _showLeft;

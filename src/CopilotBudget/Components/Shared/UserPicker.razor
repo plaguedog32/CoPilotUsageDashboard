@@ -1,0 +1,117 @@
+@* Searchable person picker: type part of a name or GitHub login, then pick from the matches (click, or arrow keys and Enter). *@
+
+<div class="picker">
+    <input type="search" value="@_text" placeholder="@Placeholder" autocomplete="off" spellcheck="false"
+           role="combobox" aria-label="@Label" aria-expanded="@(_open ? "true" : "false")" aria-controls="@_listId" aria-autocomplete="list"
+           @oninput="OnInput" @onfocus="() => _open = true" @onblur="() => _open = false" @onkeydown="OnKey" />
+    @if (_open)
+    {
+        var matches = Matches;
+        <ul class="picker-list" id="@_listId" role="listbox">
+            @if (matches.Count == 0)
+            {
+                <li class="picker-empty muted small">Nobody matches “@_text”.</li>
+            }
+            @for (var i = 0; i < matches.Count; i++)
+            {
+                var u = matches[i];
+                var index = i;
+                <li role="option" aria-selected="@(u.Id == Value ? "true" : "false")" class="@(index == _active ? "active" : "")"
+                    @onmousedown="() => Pick(u)" @onmousedown:preventDefault @onmouseover="() => _active = index">
+                    <Avatar User="u" Size="20" />
+                    <span class="picker-name">@Display(u)</span>
+                    @if (!string.IsNullOrEmpty(u.Name)) { <span class="muted small">@@@u.Login</span> }
+                </li>
+            }
+            @if (Total > matches.Count)
+            {
+                <li class="picker-empty muted small">@(Total - matches.Count) more. Keep typing to narrow it down.</li>
+            }
+        </ul>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IEnumerable<AppUser> Options { get; set; } = [];
+
+    /// <summary>The chosen person's ID, or 0 for none.</summary>
+    [Parameter] public int Value { get; set; }
+    [Parameter] public EventCallback<int> ValueChanged { get; set; }
+
+    [Parameter] public string Placeholder { get; set; } = "Search by name or GitHub login";
+    [Parameter] public string Label { get; set; } = "Person";
+
+    /// <summary>Most matches shown at once.</summary>
+    [Parameter] public int MaxShown { get; set; } = 8;
+
+    private readonly string _listId = "picker-" + Guid.NewGuid().ToString("N")[..8];
+    private string _text = "";
+    private bool _open;
+    private int _active;
+
+    private static string Display(AppUser u) => string.IsNullOrEmpty(u.Name) ? u.Login : u.Name;
+
+    private IEnumerable<AppUser> Filtered
+    {
+        get
+        {
+            var q = _text.Trim();
+            var chosen = Options.FirstOrDefault(o => o.Id == Value);
+            // Once someone is picked the box shows their name; show everyone again rather than just them.
+            if (q.Length == 0 || (chosen is not null && q == Display(chosen))) return Options.OrderBy(Display, StringComparer.OrdinalIgnoreCase);
+            return Options
+                .Where(o => o.Login.Contains(q, StringComparison.OrdinalIgnoreCase) || (o.Name?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false))
+                // Names and logins that start with the text first.
+                .OrderBy(o => Display(o).StartsWith(q, StringComparison.OrdinalIgnoreCase) || o.Login.StartsWith(q, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(Display, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private int Total => Filtered.Count();
+    private List<AppUser> Matches => Filtered.Take(MaxShown).ToList();
+
+    protected override void OnParametersSet()
+    {
+        // Show the chosen person's name, e.g. when the parent sets or clears the value.
+        var chosen = Options.FirstOrDefault(o => o.Id == Value);
+        if (chosen is not null && !_open) _text = Display(chosen);
+        else if (Value == 0 && !_open) _text = "";
+    }
+
+    private async Task OnInput(ChangeEventArgs e)
+    {
+        _text = e.Value?.ToString() ?? "";
+        _open = true;
+        _active = 0;
+        // Typing again clears the choice until someone is picked.
+        if (Value != 0) await ValueChanged.InvokeAsync(0);
+    }
+
+    private async Task Pick(AppUser u)
+    {
+        _text = Display(u);
+        _open = false;
+        await ValueChanged.InvokeAsync(u.Id);
+    }
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        var matches = Matches;
+        switch (e.Key)
+        {
+            case "ArrowDown":
+                _open = true;
+                _active = Math.Min(_active + 1, Math.Max(0, matches.Count - 1));
+                break;
+            case "ArrowUp":
+                _active = Math.Max(_active - 1, 0);
+                break;
+            case "Enter" when _open && matches.Count > 0:
+                await Pick(matches[Math.Clamp(_active, 0, matches.Count - 1)]);
+                break;
+            case "Escape":
+                _open = false;
+                break;
+        }
+    }
+}
