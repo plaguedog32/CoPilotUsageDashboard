@@ -235,6 +235,15 @@ The app writes to GitHub only when write-back is on, and only if GitHub confirms
 enterprise budgets. A token without `manage_billing:enterprise` (or any fine-grained token) keeps the app read-only:
 the *GitHub sync* page says so and locks the write-back switch off.
 
+If the organization uses SAML single sign-on, authorize the token for it: GitHub → Settings → Developer settings →
+Personal access tokens → *Configure SSO* → **Authorize** next to the organization. Until then GitHub answers 403.
+
+**A read-only trial on real data.** Use a classic token with only `manage_billing:copilot` and `read:org`, and leave
+`GitHub:EnterpriseSlug` empty. You get seats, usage, trends and everything inside the app (requests, sending,
+pools), and nothing is ever written to GitHub. Reading enterprise budgets and cost centers needs
+`manage_billing:enterprise`, which also allows writing; if you add it, the write-back switch is the only thing
+stopping writes, and it stays off until someone turns it on.
+
 What happens when you click **Save to Key Vault and test**:
 
 1. Each value goes straight to Key Vault as `GitHub--AppId`, `GitHub--AppPrivateKey`, `GitHub--Token` or

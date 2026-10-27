@@ -106,6 +106,9 @@ public class CredentialService(
                 {
                     var list = await budgetStore.ListAsync(ct);
                     checks.Add(new ConnectionCheck($"Enterprise {GitHub.EnterpriseSlug} budgets", true, $"{list.Count} user budgets readable."));
+                    var access = await budgetStore.GetWriteAccessAsync(ct);
+                    // Read-only is a valid way to run, so it isn't a failure.
+                    checks.Add(new ConnectionCheck("Writing budgets", true, access.CanWrite ? access.Reason : "Read-only. " + access.Reason));
                 }
                 catch (Exception ex) when (ex is GitHubApiException or HttpRequestException)
                 {

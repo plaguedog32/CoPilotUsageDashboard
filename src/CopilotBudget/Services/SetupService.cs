@@ -134,6 +134,9 @@ public class SetupService(
     /// <summary>The setup checklist: what's configured, what's missing, and where to fix it.</summary>
     public async Task<List<SetupStep>> GetStatusAsync()
     {
+        var enterpriseConnected = budgetStore.IsAvailable && !budgetStore.IsSimulated;
+        var access = enterpriseConnected ? await budgetStore.GetWriteAccessAsync(CancellationToken.None) : null;
+
         await using var db = await dbFactory.CreateDbContextAsync();
         var users = await db.Users.AsNoTracking().Where(u => !u.IsDisabled).ToListAsync();
         var admins = users.Count(u => budgets.IsAppAdmin(u));
@@ -168,7 +171,9 @@ public class SetupService(
                 orgs == 0 ? "None added yet. Add the organizations whose Copilot seats you manage." : $"{orgs} added, {syncedOrgs} synced.", Link: "admin"),
             new("enterprise", "GitHub enterprise (user budgets)", budgetStore.IsAvailable && !budgetStore.IsSimulated,
                 budgetStore.IsAvailable && !budgetStore.IsSimulated
-                    ? $"Budgets can be written to {configuration["GitHub:EnterpriseSlug"]}. Writing stays off until you switch it on."
+                    ? access is { CanWrite: true }
+                        ? $"Budgets can be written to {configuration["GitHub:EnterpriseSlug"]}. Writing stays off until you switch it on."
+                        : $"Budgets are read from {configuration["GitHub:EnterpriseSlug"]}, read-only. {access?.Reason}"
                     : "Optional. Needed to enforce budgets in GitHub (user-level budgets) and for cost centers.",
                 Optional: true, Link: "admin/github"),
             new("graph", "Disabled-account check (Microsoft Graph)", directory.IsAvailable,
