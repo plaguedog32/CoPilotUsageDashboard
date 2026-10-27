@@ -28,12 +28,12 @@ else
 
     <section class="card">
         <div class="table-wrap">
-            <table class="members-table">
+            <table class="members-table @(Session.ShowsOrganizations ? "with-orgs" : "")">
                 <thead>
                     <tr>
                         @foreach (var c in Columns.Where(c => c.Key != SortKey.Organizations || Session.ShowsOrganizations))
                         {
-                            <th class="@(c.Numeric ? "num" : "")" style="@(c.Key == SortKey.Usage ? "min-width:110px" : "")" aria-sort="@AriaSort(c.Key)">
+                            <th class="@(c.Numeric ? "num" : "") @c.Css" style="@(c.Key == SortKey.Usage ? "min-width:110px" : "")" aria-sort="@AriaSort(c.Key)">
                                 <button class="sort-btn @(_sortKey == c.Key ? "active" : "")" @onclick="() => SortBy(c.Key)">
                                     @c.Label<span class="sort-arrow" aria-hidden="true">@(_sortKey != c.Key ? "↕" : _descending ? "↓" : "↑")</span>
                                 </button>
@@ -55,7 +55,7 @@ else
                             </td>
                             @if (Session.ShowsOrganizations)
                             {
-                            <td>
+                            <td class="col-orgs">
                                 <div class="org-tags">
                                     @foreach (var m in b.Memberships.OrderBy(m => m.Organization.Name))
                                     {
@@ -69,18 +69,18 @@ else
                                 </div>
                             </td>
                             }
-                            <td class="secondary small nowrap">
+                            <td class="secondary small nowrap col-last">
                                 @Format.Relative(latest?.LastActivityUtc)
                                 @if (!string.IsNullOrEmpty(latest?.LastActivityEditor))
                                 {
                                     <div class="muted">@ShortEditor(latest.LastActivityEditor)</div>
                                 }
                             </td>
-                            <td class="num">@Session.Amt(b.Allocated)</td>
-                            <td class="num">@Session.Amt(b.Used)</td>
+                            <td class="num col-alloc">@Session.Amt(b.Allocated)</td>
+                            <td class="num col-used">@Session.Amt(b.Used)</td>
                             <td class="num"><strong>@Session.Amt(b.Available)</strong></td>
                             <td>@if (b.HasSeat) { <Meter Value="b.Used" Max="b.Allocated" Label="@($"{Format.Percent(b.PercentUsed)} used")" /> }</td>
-                            <td class="secondary small nowrap">
+                            <td class="secondary small nowrap col-runs">
                                 @if (b.HasSeat && Forecast.For(b).RunOutUtc is { } runOut)
                                 {
                                     <span class="@(runOut <= DateTime.UtcNow ? "amount-out" : "")" title="At their pace so far, GitHub stops them here">@(runOut <= DateTime.UtcNow ? "Out now" : runOut.ToString("d MMM"))</span>
@@ -88,19 +88,21 @@ else
                                 else if (b.HasSeat) { <span class="muted" title="Has enough to last until the reset">–</span> }
                             </td>
                             <td><BudgetStatus Budget="b" /></td>
-                            <td class="nowrap" style="text-align:right">
-                                @if (Session.HasSeat && b.User.Id != Session.User?.Id && b.HasSeat && !b.User.IsDisabled)
-                                {
-                                    <button class="btn sm" @onclick="() => _sendTo = b"><Icon Name="send" Size="14" /> Send</button>
-                                }
-                                @if (Session.IsAppAdmin && b.HasSeat && b.Available > 0)
-                                {
-                                    <button class="btn ghost sm" title="Move some of their unused credits to someone else" @onclick="() => OpenMove(b.User.Id)">Move credits</button>
-                                }
-                                @if (Session.CanAdjust(b))
-                                {
-                                    <button class="btn ghost sm" @onclick="() => _changing = b">Change budget</button>
-                                }
+                            <td>
+                                <div class="row-actions">
+                                    @if (Session.HasSeat && b.User.Id != Session.User?.Id && b.HasSeat && !b.User.IsDisabled)
+                                    {
+                                        <button class="btn sm" @onclick="() => _sendTo = b"><Icon Name="send" Size="14" /> Send</button>
+                                    }
+                                    @if (Session.IsAppAdmin && b.HasSeat && b.Available > 0)
+                                    {
+                                        <button class="btn ghost sm" title="Move some of their unused credits to someone else" @onclick="() => OpenMove(b.User.Id)">Move credits</button>
+                                    }
+                                    @if (Session.CanAdjust(b))
+                                    {
+                                        <button class="btn ghost sm" @onclick="() => _changing = b">Change budget</button>
+                                    }
+                                </div>
                             </td>
                         </tr>
                     }
@@ -137,19 +139,20 @@ else
 
     private enum SortKey { Member, Organizations, LastActive, Allocated, Used, Available, Usage, RunsOut, Status }
 
-    private record Column(SortKey Key, string Label, bool Numeric = false, bool DescendingFirst = false);
+    /// <param name="Css">Class on the column's cells, used to hide less important columns on narrow windows (see app.css).</param>
+    private record Column(SortKey Key, string Label, bool Numeric = false, bool DescendingFirst = false, string Css = "");
 
     // Numbers and dates start with the biggest or most recent first; text starts A to Z.
     private static readonly Column[] Columns =
     [
         new(SortKey.Member, "Member"),
-        new(SortKey.Organizations, "Organizations"),
-        new(SortKey.LastActive, "Last active", DescendingFirst: true),
-        new(SortKey.Allocated, "Allocated", Numeric: true, DescendingFirst: true),
-        new(SortKey.Used, "Used", Numeric: true, DescendingFirst: true),
+        new(SortKey.Organizations, "Organizations", Css: "col-orgs"),
+        new(SortKey.LastActive, "Last active", DescendingFirst: true, Css: "col-last"),
+        new(SortKey.Allocated, "Allocated", Numeric: true, DescendingFirst: true, Css: "col-alloc"),
+        new(SortKey.Used, "Used", Numeric: true, DescendingFirst: true, Css: "col-used"),
         new(SortKey.Available, "Available", Numeric: true, DescendingFirst: true),
         new(SortKey.Usage, "Usage", DescendingFirst: true),
-        new(SortKey.RunsOut, "Runs out"),
+        new(SortKey.RunsOut, "Runs out", Css: "col-runs"),
         new(SortKey.Status, "Status", DescendingFirst: true),
     ];
 

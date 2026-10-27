@@ -718,6 +718,19 @@ table.heat tbody tr.selected td:not(.cell) { background: var(--accent-soft); }
 .sort-btn.active .sort-arrow { opacity: 1; }
 .members-table td:first-child { min-width: 170px; }
 .members-table th, .members-table td { padding-left: 8px; padding-right: 8px; }
+.members-table .row-actions { min-width: 0; }
+/* Narrow windows: drop the less important columns rather than scrolling sideways. The usage bar, available and
+   status still tell the story; hovering the bar gives used and budget. */
+/* Admins and org owners get the Organizations column and wider action buttons, so they drop Used, and the
+   other columns go a little sooner. */
+.members-table.with-orgs .col-used { display: none; }
+@media (max-width: 1170px) { .members-table.with-orgs .col-last { display: none; } }
+@media (max-width: 1080px) { .members-table.with-orgs .col-runs { display: none; } }
+@media (max-width: 1420px) { .members-table .col-orgs { display: none; } }
+@media (max-width: 1279px) { .members-table .col-alloc, .members-table .col-used { display: none; } }
+@media (max-width: 1130px) { .members-table .col-last { display: none; } }
+@media (max-width: 1040px) { .members-table .col-runs { display: none; } }
+@media (max-width: 1000px) { .members-table td:first-child { min-width: 140px; } }
 .members-table td:first-child .person { white-space: nowrap; }
 
 /* ---------- Modal dialog ---------- */
