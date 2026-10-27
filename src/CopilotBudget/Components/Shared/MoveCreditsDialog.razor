@@ -25,15 +25,18 @@
                         }
                     </select>
                 </div>
-                <div class="field" style="flex:1">
-                    <label for="move-to">To</label>
-                    <select id="move-to" @bind="_toId">
-                        <option value="0">Choose someone…</option>
-                        @foreach (var b in People.Where(b => b.User.Id != _fromId && !b.User.IsDisabled))
-                        {
-                            <option value="@b.User.Id">@b.User.Login · @Session.Amt(b.Available) left</option>
-                        }
-                    </select>
+                <div class="field move-to" style="flex:1">
+                    <label>To</label>
+                    <UserPicker Options="Recipients" @bind-Value="_toId" KeepOrder="true" MaxShown="50" Label="Move credits to"
+                                Placeholder="Search by name or GitHub login">
+                        <Extra Context="u">
+                            @if (_requested.TryGetValue(u.Id, out var asked))
+                            {
+                                <span class="badge accent" title="Open request for @Session.WithUnit(asked)">Asked @Session.Amt(asked)</span>
+                            }
+                            <span class="muted small">@Session.Amt(AvailableOf(u.Id)) left</span>
+                        </Extra>
+                    </UserPicker>
                 </div>
             </div>
 
@@ -83,6 +86,18 @@
     private bool _busy;
     private string? _error;
 
+    /// <summary>Open requests by person: the total they've asked for.</summary>
+    private Dictionary<int, decimal> _requested = [];
+
+    /// <summary>People with open requests first, then least to most credits left.</summary>
+    private IEnumerable<AppUser> Recipients => People
+        .Where(b => b.User.Id != _fromId && !b.User.IsDisabled)
+        .OrderBy(b => _requested.ContainsKey(b.User.Id) ? 0 : 1)
+        .ThenBy(b => b.Available)
+        .Select(b => b.User);
+
+    private decimal AvailableOf(int userId) => People.FirstOrDefault(b => b.User.Id == userId)?.Available ?? 0;
+
     private MemberBudget? From => People.FirstOrDefault(b => b.User.Id == _fromId);
     private MemberBudget? To => _toId == 0 ? null : People.FirstOrDefault(b => b.User.Id == _toId);
     private decimal Movable => Math.Max(0, Math.Floor(From?.Available ?? 0));
@@ -92,6 +107,13 @@
         _fromId = FromUserId;
         _toId = ToUserId == FromUserId ? 0 : ToUserId;
         Clamp();
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _requested = (await Budgets.GetRequestsAsync(RequestStatus.Pending, take: 1000))
+            .GroupBy(r => r.RequesterId)
+            .ToDictionary(g => g.Key, g => g.Sum(r => r.Amount));
     }
 
     private void Clamp()

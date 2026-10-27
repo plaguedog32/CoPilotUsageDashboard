@@ -1133,5 +1133,9 @@ span.role-chip { cursor: default; }
 }
 .picker-list li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
 .picker-list li.active { background: var(--accent-soft); }
-.picker-list li .picker-name { font-weight: 550; }
+.picker-list { overflow-x: hidden; }
+.picker-list li .picker-name { font-weight: 550; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-list li.picker-empty { cursor: default; }
+/* The move dialog's To list has extra details: let it spread left over the From column. */
+.move-to .picker-list { left: auto; width: 420px; max-width: 80vw; }
+.picker-list li .picker-extra { margin-left: auto; flex-shrink: 0; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
