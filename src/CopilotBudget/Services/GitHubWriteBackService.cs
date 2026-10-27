@@ -95,6 +95,7 @@ public class GitHubWriteBackService(
             return new WriteBackRun(0, 0, 0, 0, 0, 1, "Couldn't read budgets from GitHub: " + ex.Message);
         }
         await alerts.ResolveAsync("writeback-read");
+        var access = await store.GetWriteAccessAsync(ct);
         var byLogin = remote.GroupBy(b => b.Login, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         var byId = remote.GroupBy(b => b.Id).ToDictionary(g => g.Key, g => g.First());
@@ -139,10 +140,10 @@ public class GitHubWriteBackService(
                 newlyFlagged.Add(person.User.Login);
                 reconcile++;
             }
-            else if (!settings.GitHubWriteBackEnabled)
+            else if (!settings.GitHubWriteBackEnabled || !access.CanWrite)
             {
                 link.State = GitHubBudgetState.WritePaused;
-                link.Message = $"GitHub has {Dollars(current?.Dollars)}; the app wants ${desired}. Writing is off.";
+                link.Message = $"GitHub has {Dollars(current?.Dollars)}; the app wants ${desired}. {(access.CanWrite ? "Writing is off." : "The GitHub connection is read-only.")}";
                 paused++;
             }
             else

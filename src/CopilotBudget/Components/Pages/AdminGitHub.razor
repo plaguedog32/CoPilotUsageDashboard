@@ -42,10 +42,15 @@ else
             }
             else
             {
+                @if (ReadOnly)
+                {
+                    <div class="alert"><span class="icon"><Icon Name="info" /></span>
+                        <span><strong>Read-only.</strong> @_access!.Reason Nothing is written to GitHub; budgets are still read and compared.</span></div>
+                }
                 <label class="switch lg">
-                    <input type="checkbox" checked="@Session.Settings.GitHubWriteBackEnabled" disabled="@(!Session.CanManageIntegration)" @onchange="e => SetWriteBack((bool)e.Value!)" />
+                    <input type="checkbox" checked="@(Session.Settings.GitHubWriteBackEnabled && !ReadOnly)" disabled="@(!Session.CanManageIntegration || ReadOnly)" @onchange="e => SetWriteBack((bool)e.Value!)" />
                     <span class="switch-track" aria-hidden="true"></span>
-                    <span class="switch-label">@(Session.Settings.GitHubWriteBackEnabled ? "Writing budgets to GitHub" : "Off: reading and comparing only")</span>
+                    <span class="switch-label">@(ReadOnly ? "Off: read-only mode" : Session.Settings.GitHubWriteBackEnabled ? "Writing budgets to GitHub" : "Off: reading and comparing only")</span>
                 </label>
                 <p class="muted small mt">
                     This is the off switch. Turn it off and nothing more is written; the app keeps reading GitHub and showing differences.
@@ -182,9 +187,14 @@ else
     private Dictionary<int, MemberBudget> _budgets = [];
     private GitHubBudgetState? _filter;
     private bool _busy;
+    private GitHubWriteAccess? _access;
+
+    /// <summary>The GitHub connection can't write budgets, so the switch is locked off.</summary>
+    private bool ReadOnly => _access is { CanWrite: false };
 
     protected override async Task LoadAsync()
     {
+        _access = WriteBack.Store.IsAvailable ? await WriteBack.Store.GetWriteAccessAsync(CancellationToken.None) : null;
         _links = await WriteBack.GetLinksAsync();
         _ops = await WriteBack.GetOperationsAsync(80);
         _budgets = (await Budgets.GetBudgetsAsync(Period.Current)).ToDictionary(b => b.User.Id);

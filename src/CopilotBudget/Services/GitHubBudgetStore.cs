@@ -14,6 +14,9 @@ public interface IGitHubBudgetStore
 
     bool IsSimulated { get; }
 
+    /// <summary>Whether budgets can be written, or only read and compared.</summary>
+    Task<GitHubWriteAccess> GetWriteAccessAsync(CancellationToken ct);
+
     Task<List<GitHubUserBudget>> ListAsync(CancellationToken ct);
     Task<GitHubUserBudget?> GetAsync(string budgetId, CancellationToken ct);
     Task<GitHubUserBudget?> CreateAsync(string login, int dollars, CancellationToken ct);
@@ -21,7 +24,7 @@ public interface IGitHubBudgetStore
 }
 
 /// <summary>User-level budgets in a GitHub Enterprise Cloud account (GitHub:EnterpriseSlug).</summary>
-public class EnterpriseBudgetStore(GitHubCopilotClient github, IOptionsMonitor<GitHubOptions> options) : IGitHubBudgetStore
+public class EnterpriseBudgetStore(GitHubCopilotClient github, GitHubCredentials credentials, IOptionsMonitor<GitHubOptions> options) : IGitHubBudgetStore
 {
     private GitHubOptions Options => options.CurrentValue;
     private string Slug => Options.EnterpriseSlug!;
@@ -32,6 +35,10 @@ public class EnterpriseBudgetStore(GitHubCopilotClient github, IOptionsMonitor<G
         ? $"GitHub enterprise {Options.EnterpriseSlug}"
         : "Not connected. Set GitHub credentials (a GitHub App or token) and the enterprise slug (user budgets are an enterprise feature).";
     public bool IsSimulated => false;
+
+    public Task<GitHubWriteAccess> GetWriteAccessAsync(CancellationToken ct) => IsAvailable
+        ? credentials.GetWriteAccessAsync(Slug, ct)
+        : Task.FromResult(new GitHubWriteAccess(false, "Not connected."));
 
     public Task<List<GitHubUserBudget>> ListAsync(CancellationToken ct) => github.ListUserBudgetsAsync(Slug, ct);
     public Task<GitHubUserBudget?> GetAsync(string budgetId, CancellationToken ct) => github.GetUserBudgetAsync(Slug, budgetId, ct);
@@ -58,6 +65,9 @@ public class SimulatedBudgetStore : IGitHubBudgetStore
     public bool IsAvailable => true;
     public string Description => "Simulated GitHub (demo data)";
     public bool IsSimulated => true;
+
+    public Task<GitHubWriteAccess> GetWriteAccessAsync(CancellationToken ct) =>
+        Task.FromResult(new GitHubWriteAccess(true, "Simulated GitHub accepts writes."));
 
     public Task<List<GitHubUserBudget>> ListAsync(CancellationToken ct) => Task.FromResult(_budgets.Values.ToList());
 

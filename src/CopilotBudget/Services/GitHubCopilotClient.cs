@@ -288,6 +288,8 @@ public class GitHubCopilotClient(HttpClient http, IOptionsMonitor<GitHubOptions>
 
     private async Task<JsonDocument> SendAsync(string owner, HttpMethod method, string path, object? body, CancellationToken ct)
     {
+        if (method != HttpMethod.Get && await credentials.GetWriteAccessAsync(owner, ct) is { CanWrite: false } access)
+            throw new GitHubApiException(HttpStatusCode.Forbidden, $"Didn't send {method} {path.Split('?')[0]}. {access.Reason}");
         using var request = new HttpRequestMessage(method, path);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await credentials.GetTokenAsync(owner, ct));
         if (body is not null) request.Content = JsonContent.Create(body);

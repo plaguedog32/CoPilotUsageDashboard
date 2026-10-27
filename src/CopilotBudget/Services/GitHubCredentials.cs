@@ -7,6 +7,9 @@ using Microsoft.Extensions.Options;
 
 namespace CopilotBudget.Services;
 
+/// <summary>Whether the GitHub connection can write user budgets, and why (shown to admins).</summary>
+public record GitHubWriteAccess(bool CanWrite, string Reason);
+
 /// <summary>An organization or enterprise where the GitHub App is installed.</summary>
 public record GitHubInstallation(long Id, string Account, string AccountType, string? AvatarUrl, DateTime? TokenExpiresUtc);
 
@@ -28,6 +31,8 @@ public class GitHubCredentials(IHttpClientFactory httpFactory, IOptionsMonitor<G
     private readonly SemaphoreSlim _lock = new(1, 1);
     private List<GitHubInstallation> _installations = [];
     private DateTime _installationsFetchedUtc = DateTime.MinValue;
+    private readonly ConcurrentDictionary<long, Dictionary<string, string>> _permissions = new();
+    private (GitHubWriteAccess Access, string Key, DateTime CheckedUtc)? _writeAccess;
 
     private GitHubOptions Options => options.CurrentValue;
 
@@ -73,6 +78,9 @@ public class GitHubCredentials(IHttpClientFactory httpFactory, IOptionsMonitor<G
                     var account = i.GetProperty("account");
                     var login = account.TryGetProperty("login", out var l) ? l.GetString() : account.TryGetProperty("slug", out var sl) ? sl.GetString() : null;
                     if (login is null) continue;
+                    if (i.TryGetProperty("permissions", out var perms) && perms.ValueKind == JsonValueKind.Object)
+                        _permissions[i.GetProperty("id").GetInt64()] = perms.EnumerateObject()
+                            .ToDictionary(p => p.Name, p => p.Value.GetString() ?? "", StringComparer.OrdinalIgnoreCase);
                     list.Add(new GitHubInstallation(i.GetProperty("id").GetInt64(), login,
                         i.TryGetProperty("target_type", out var t) ? t.GetString() ?? "Organization" : "Organization",
                         account.TryGetProperty("avatar_url", out var a) ? a.GetString() : null, null));
@@ -142,11 +150,84 @@ public class GitHubCredentials(IHttpClientFactory httpFactory, IOptionsMonitor<G
         return $"{header}.{payload}.{Base64Url(signature)}";
     }
 
-    /// <summary>Forget cached tokens, e.g. after the private key was rotated.</summary>
+    /// <summary>
+    /// Whether the connection may write user budgets to <paramref name="enterprise"/>. The app never writes unless
+    /// GitHub confirms the permission, so a read-only token puts it in read-only mode by itself.
+    /// <list type="bullet">
+    /// <item>Classic token: its scopes (GitHub reports them) must include <c>manage_billing:enterprise</c> or <c>admin:enterprise</c>.</item>
+    /// <item>Fine-grained token: GitHub doesn't report what it can do, so it's treated as read-only.</item>
+    /// <item>GitHub App: its installation on the enterprise must have write access to administration or billing.</item>
+    /// </list>
+    /// Checked at most every 10 minutes, and again after the credentials change.
+    /// </summary>
+    public async Task<GitHubWriteAccess> GetWriteAccessAsync(string? enterprise, CancellationToken ct)
+    {
+        var key = $"{Mode}|{Options.AppId}|{Options.Token?.GetHashCode()}|{enterprise}";
+        if (_writeAccess is { } cached && cached.Key == key && DateTime.UtcNow - cached.CheckedUtc < TimeSpan.FromMinutes(10))
+            return cached.Access;
+
+        GitHubWriteAccess access;
+        try
+        {
+            access = Mode switch
+            {
+                "app" => await AppWriteAccessAsync(enterprise, ct),
+                "token" => await TokenWriteAccessAsync(ct),
+                _ => new GitHubWriteAccess(false, "No GitHub credentials are configured."),
+            };
+        }
+        catch (Exception ex) when (ex is GitHubApiException or HttpRequestException or TaskCanceledException)
+        {
+            // Not cached: try again next time.
+            return new GitHubWriteAccess(false, "Couldn't check the GitHub permissions, so nothing is written: " + ex.Message);
+        }
+        if (access.CanWrite != _writeAccess?.Access.CanWrite)
+            logger.LogInformation("GitHub write access: {CanWrite}. {Reason}", access.CanWrite, access.Reason);
+        _writeAccess = (access, key, DateTime.UtcNow);
+        return access;
+    }
+
+    private async Task<GitHubWriteAccess> TokenWriteAccessAsync(CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "user");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Options.Token);
+        using var response = await Http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new GitHubApiException(response.StatusCode, $"GitHub returned {(int)response.StatusCode} checking the token.");
+
+        if (!response.Headers.TryGetValues("X-OAuth-Scopes", out var values))
+            return new GitHubWriteAccess(false,
+                "This looks like a fine-grained token, and GitHub doesn't say what those can change. " +
+                "To write budgets, use a classic token with manage_billing:enterprise.");
+
+        var scopes = values.SelectMany(v => v.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)).ToList();
+        return scopes.Any(s => s is "manage_billing:enterprise" or "admin:enterprise")
+            ? new GitHubWriteAccess(true, "The token can manage enterprise billing.")
+            : new GitHubWriteAccess(false,
+                $"The token's scopes ({(scopes.Count == 0 ? "none" : string.Join(", ", scopes))}) don't include manage_billing:enterprise.");
+    }
+
+    private async Task<GitHubWriteAccess> AppWriteAccessAsync(string? enterprise, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(enterprise))
+            return new GitHubWriteAccess(false, "No enterprise is set.");
+        var installation = await FindInstallationAsync(enterprise, ct);
+        if (installation is null)
+            return new GitHubWriteAccess(false, $"The GitHub App isn't installed on the {enterprise} enterprise.");
+        var permissions = _permissions.TryGetValue(installation.Id, out var p) ? p : [];
+        var writable = permissions.Where(kv => kv.Value == "write" && (kv.Key.Contains("administration") || kv.Key.Contains("billing")))
+            .Select(kv => kv.Key).ToList();
+        return writable.Count > 0
+            ? new GitHubWriteAccess(true, $"The GitHub App can write {string.Join(", ", writable)} on {enterprise}.")
+            : new GitHubWriteAccess(false, $"The GitHub App has no administration or billing write permission on {enterprise}.");
+    }
+
+    /// <summary>Forget cached tokens and permissions, e.g. after the private key was rotated.</summary>
     public void Reset()
     {
         _tokens.Clear();
         _installationsFetchedUtc = DateTime.MinValue;
+        _writeAccess = null;
     }
 
     private HttpClient Http => httpFactory.CreateClient(HttpClientName);

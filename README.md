@@ -155,6 +155,31 @@ Integration admins can rotate the key on the Integration page when Key Vault is 
 `manage_billing:copilot` and `read:org` (plus `manage_billing:enterprise` for user budgets); the owner must be an
 owner or billing manager of each organization. Set `GitHub:Token`. If both are set, the GitHub App is used.
 
+**Read-only mode.** The app only ever writes one thing to GitHub: user budgets, on the enterprise, when write-back
+is on. Before any write it checks what the connection is allowed to do, and stays read-only unless GitHub confirms
+write access:
+
+- a classic token must have `manage_billing:enterprise` (or `admin:enterprise`); GitHub reports a classic token's
+  scopes, so the app can tell;
+- a fine-grained token is always treated as read-only, because GitHub doesn't report what it can change;
+- a GitHub App needs administration or billing write permission on its enterprise installation.
+
+When it's read-only, the *GitHub sync* page says why and the write-back switch is locked off. Budgets are still read
+and compared. So a token without `manage_billing:enterprise` (e.g. just `manage_billing:copilot` and `read:org`) is
+a safe way to try the app on real data.
+
+**Trying it on real data locally.** Use a separate database and turn off the demo data, but keep demo sign-in so you
+can sign in without Entra:
+
+```bash
+cd src/CopilotBudget
+export App__SeedDemoData=false App__Admins__0=you@company.com        GitHub__Token=ghp_... ConnectionStrings__Default="Data Source=real.db"
+dotnet run
+```
+
+Sign in with *simulate a Microsoft sign-in* as `you@company.com`, add your organizations on the Admin page, and wait
+for the first sync. Once people are synced they also appear in the demo sign-in list.
+
 ### 2. Microsoft Entra ID for sign-in
 
 People sign in with their Microsoft work account. Register an app in Entra ID (App registrations → New):

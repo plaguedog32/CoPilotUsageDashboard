@@ -231,6 +231,10 @@ tokens last an hour.
 
 Choose *Personal access token* and paste it on the Setup page.
 
+The app writes to GitHub only when write-back is on, and only if GitHub confirms the connection may write
+enterprise budgets. A token without `manage_billing:enterprise` (or any fine-grained token) keeps the app read-only:
+the *GitHub sync* page says so and locks the write-back switch off.
+
 What happens when you click **Save to Key Vault and test**:
 
 1. Each value goes straight to Key Vault as `GitHub--AppId`, `GitHub--AppPrivateKey`, `GitHub--Token` or
