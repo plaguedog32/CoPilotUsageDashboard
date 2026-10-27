@@ -173,7 +173,8 @@ can sign in without Entra:
 
 ```bash
 cd src/CopilotBudget
-export App__SeedDemoData=false App__Admins__0=you@company.com        GitHub__Token=ghp_... ConnectionStrings__Default="Data Source=real.db"
+export App__SeedDemoData=false App__Admins__0=you@company.com GitHub__Token=ghp_...
+export ConnectionStrings__Default="Data Source=real.db"
 dotnet run
 ```
 
