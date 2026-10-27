@@ -61,7 +61,7 @@
                     {
                         <button class="btn" type="submit" name="DemoLogin" value="@user.Login">
                             <Avatar User="user" Size="22" />
-                            <span>@user.Login</span>
+                            <span>@(user.HasGitHubAccount ? user.Login : user.Name)</span>
                             @{ var roles = user.Roles | (AppOptions.Value.IsAdmin(user.Login) || AppOptions.Value.IsAdmin(user.Email) ? AppRole.Admin : AppRole.None); }
                             @if (user.IsDisabled)
                             {
@@ -69,7 +69,7 @@
                             }
                             else if (roles != AppRole.None)
                             {
-                                <span class="badge accent" style="margin-left:auto">@BudgetService.RoleNames(roles)</span>
+                                <span class="badge accent" style="margin-left:auto">@BudgetService.RoleNames(roles)@(user.HasGitHubAccount ? "" : " · no seat")</span>
                             }
                         </button>
                     }
@@ -121,7 +121,8 @@
         if (!AppOptions.Value.EnableDemoLogin) return;
         await using var db = await DbFactory.CreateDbContextAsync();
         // The demo's named characters (created first) cover every role; the generated crowd isn't needed here.
-        _demoUsers = (await db.Users.AsNoTracking().OrderBy(u => u.Id).Take(DemoSeeder.NamedPeople).ToListAsync())
+        _demoUsers = (await db.Users.AsNoTracking().Where(u => u.HasGitHubAccount).OrderBy(u => u.Id).Take(DemoSeeder.NamedPeople).ToListAsync())
+            .Concat(await db.Users.AsNoTracking().Where(u => u.Login == DemoSeeder.SeatlessAdminLogin).ToListAsync())
             .OrderBy(u => u.Login, StringComparer.OrdinalIgnoreCase).ToList();
     }
 

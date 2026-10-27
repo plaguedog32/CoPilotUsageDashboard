@@ -125,7 +125,8 @@ cd src/CopilotBudget
 dotnet run --launch-profile http
 ```
 
-Open http://localhost:5121 and pick a demo user. `mona` is an admin. You can also simulate a Microsoft
+Open http://localhost:5121 and pick a demo user. `mona` is an admin. **Sam Rivera** is an admin with no GitHub
+account or Copilot seat, to see the app as someone who only runs it. You can also simulate a Microsoft
 sign-in with a work email (demo people have `<login>@contoso.com`) to try the email matching and linking. The Development settings
 (`appsettings.Development.json`) seed two fake organizations, **Contoso (demo)** and
 **Fabrikam (demo)**, with 61 people (11 named characters, one per role, plus 50 generated people with a realistic

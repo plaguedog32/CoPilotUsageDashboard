@@ -27,6 +27,12 @@ public static class DemoSeeder
 
     public const int ExtraPeople = 50;
 
+    /// <summary>
+    /// An admin with no GitHub account or Copilot seat, like someone in IT who only runs the app.
+    /// Listed on the demo sign-in page alongside the named characters.
+    /// </summary>
+    public const string SeatlessAdminLogin = "sam.rivera@contoso.com";
+
     /// <summary>How many named characters there are (created first, so they have the lowest IDs).</summary>
     public static int NamedPeople => Named.Length;
 
@@ -162,6 +168,12 @@ public static class DemoSeeder
         users["octocat"].AssignedRoles = AppRole.IntegrationAdmin;
         users["dennis"].AssignedRoles = AppRole.Auditor;
         users["linus"].AssignedRoles = AppRole.BudgetVisibility;
+        // Sam runs the app but has no Copilot seat or GitHub account: an admin-only view.
+        db.Users.Add(new AppUser
+        {
+            Login = SeatlessAdminLogin, Name = "Sam Rivera", Email = SeatlessAdminLogin, EmailSource = "entra",
+            HasGitHubAccount = false, AssignedRoles = AppRole.Admin,
+        });
         // Alan left: his Entra account was disabled. His unused credits are waiting to be reassigned.
         users["alan"].IsDisabled = true;
         users["alan"].DisabledUtc = now.AddDays(-1);
