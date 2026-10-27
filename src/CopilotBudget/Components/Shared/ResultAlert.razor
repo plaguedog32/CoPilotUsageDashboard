@@ -1,0 +1,15 @@
+@if (Result is not null)
+{
+    <div class="alert @(Result.Ok ? "good" : "critical")" role="status">
+        <span class="icon"><Icon Name="@(Result.Ok ? "check" : "alert")" /></span>
+        <span>@Result.Message</span>
+        <button class="dismiss" type="button" aria-label="Dismiss" @onclick="Dismiss">×</button>
+    </div>
+}
+
+@code {
+    [Parameter] public OpResult? Result { get; set; }
+    [Parameter] public EventCallback<OpResult?> ResultChanged { get; set; }
+
+    private Task Dismiss() => ResultChanged.InvokeAsync(null);
+}

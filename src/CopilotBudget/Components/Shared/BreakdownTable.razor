@@ -1,0 +1,53 @@
+@* Ranked slices with a share bar. Bars use one color: the length carries the comparison. *@
+@inject UserSession Session
+
+<section class="card">
+    <div class="card-header">
+        <div>
+            <h2>@Title</h2>
+            @if (Note is not null) { <p>@Note</p> }
+        </div>
+    </div>
+    @if (Slices.Count == 0)
+    {
+        <div class="empty small"><strong>Nothing yet</strong>@Empty</div>
+    }
+    else
+    {
+        var max = Slices.Max(s => s.Credits);
+        <div class="share-list">
+            @foreach (var s in Slices)
+            {
+                var share = Total <= 0 ? 0 : (double)(s.Credits / Total * 100);
+                <div class="share-row" title="@(SharesOnly ? $"{s.Name}: {Format.Percent(share)}" : $"{s.Name}: {Session.WithUnit(s.Credits)}, {Format.Percent(share)}, {Format.Dollars(s.Cost)}")">
+                    <span class="share-name">@s.Name</span>
+                    <span class="share-bar"><span style="width:@((max <= 0 ? 0 : (double)(s.Credits / max * 100)).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))%"></span></span>
+                    @if (SharesOnly)
+                    {
+                        <span class="share-val"><strong>@Format.Percent(share)</strong></span>
+                    }
+                    else
+                    {
+                        <span class="share-val"><strong>@Session.Amt(s.Credits)</strong> <span class="muted">@Format.Percent(share)</span></span>
+                    }
+                    @if (ShowPeople) { <span class="share-people muted small">@(s.People == 0 ? "" : s.People == 1 ? "1 person" : $"{s.People} people")</span> }
+                </div>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter, EditorRequired] public IReadOnlyList<UsageSlice> Slices { get; set; } = [];
+    [Parameter] public decimal Total { get; set; }
+    [Parameter] public bool ShowPeople { get; set; }
+
+    /// <summary>Only each slice's share, no credit amounts.</summary>
+    [Parameter] public bool SharesOnly { get; set; }
+    [Parameter] public string? Note { get; set; }
+    [Parameter] public string Empty { get; set; } = "";
+}

@@ -1,0 +1,129 @@
+@page "/usage"
+@inject UsageBreakdownService Breakdown
+
+<PageTitle>Usage breakdown · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.InUserbase)
+{
+    <NoOrgNotice />
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Usage breakdown</h1>
+            <p>@(Session.SeesCompanyTotals ? "Credits by day, model, SKU and cost center, from GitHub's usage report." : "Which models people across the company use, day by day.")</p>
+        </div>
+        <div class="row">
+            <select @bind="_period" @bind:after="ReloadAsync" aria-label="Month">
+                @foreach (var p in Enumerable.Reverse(Period.LastMonths(12)))
+                {
+                    <option value="@p">@Period.Display(p)</option>
+                }
+            </select>
+            @if (Session.ShowsOrganizations)
+            {
+                <select @bind="_orgId" @bind:after="ReloadAsync" aria-label="Organization">
+                    <option value="0">Company-wide</option>
+                    @foreach (var o in Session.Organizations)
+                    {
+                        <option value="@o.Id">@o.Name</option>
+                    }
+                </select>
+            }
+        </div>
+    </div>
+
+    @if (_data is { } shares && !Session.SeesCompanyTotals)
+    {
+        <section class="card mb">
+            <div class="card-header">
+                <div>
+                    <h2>Models by day</h2>
+                    <p>Each day's Copilot use across the company, split by model. Hover a day for the split.</p>
+                </div>
+            </div>
+            @if (shares.Daily.Count == 0)
+            {
+                <div class="empty"><strong>No daily data yet</strong></div>
+            }
+            else
+            {
+                <DailyColumns Days="shares.Daily" DaysInMonth="shares.DaysInMonth" Models="shares.Models" Period="@shares.Period" Relative="true" AriaLabel="Share of each day's use by model" />
+            }
+        </section>
+        <BreakdownTable Title="Models this month" Slices="shares.ByModel" Total="shares.ByModel.Sum(m => m.Credits)" SharesOnly="true" Empty="No model data for this month yet." />
+    }
+    else if (_data is { } d)
+    {
+        <div class="grid grid-4 mb">
+            <div class="stat">
+                <div class="label">Used</div>
+                <div class="value">@Session.Amt(d.Total)</div>
+                <div class="sub">@Format.Dollars(d.Total * Session.DollarsPerCredit) in @Period.Display(d.Period)</div>
+            </div>
+            <div class="stat">
+                <div class="label">Top model</div>
+                <div class="value small-value">@(d.ByModel.FirstOrDefault()?.Name ?? "–")</div>
+                <div class="sub">@(d.ByModel.Count == 0 ? "No model data" : $"{Share(d.ByModel[0].Credits, d)} of credits")</div>
+            </div>
+            <div class="stat">
+                <div class="label">Busiest day</div>
+                @{ var busiest = d.Daily.MaxBy(x => x.Credits); }
+                <div class="value">@(busiest is null ? "–" : Session.Amt(Math.Round(busiest.Credits)))</div>
+                <div class="sub">@(busiest is null ? "No daily data" : DayName(busiest.Day))</div>
+            </div>
+            <div class="stat">
+                <div class="label">Cost centers</div>
+                <div class="value">@d.ByCostCenter.Count(c => c.Name != UsageBreakdownService.NoCostCenter)</div>
+                <div class="sub">@(d.ByCostCenter.FirstOrDefault(c => c.Name == UsageBreakdownService.NoCostCenter) is { } none ? $"{Session.WithUnit(none.Credits)} unassigned" : "Everyone assigned")</div>
+            </div>
+        </div>
+
+        <section class="card mb">
+            <div class="card-header">
+                <div>
+                    <h2>By day</h2>
+                    <p>Credits used each day, stacked by model. Hover a day for the split.</p>
+                </div>
+            </div>
+            @if (d.Daily.Count == 0)
+            {
+                <div class="empty"><strong>No daily data</strong>Daily usage is synced for this month and last (GitHub:SyncDailyUsage).</div>
+            }
+            else
+            {
+                <DailyColumns Days="d.Daily" DaysInMonth="d.DaysInMonth" Models="d.Models" Period="@d.Period" />
+            }
+        </section>
+
+        <div class="grid grid-2">
+            <BreakdownTable Title="By model" Slices="d.ByModel" Total="d.Total" ShowPeople="true" Empty="No model data for this month yet." />
+            <BreakdownTable Title="By SKU" Slices="d.BySku" Total="d.Total" ShowPeople="true" Empty="No SKU data for this month yet." />
+            <BreakdownTable Title="By cost center" Slices="d.ByCostCenter" Total="d.Total" ShowPeople="true"
+                            Note="From GitHub's enterprise cost centers." Empty="No usage this month." />
+            <BreakdownTable Title="By product" Slices="d.ByProduct" Total="d.Total" Empty="No product data for this month yet." />
+        </div>
+    }
+}
+
+@code {
+    private string _period = Period.Current;
+    private int _orgId;
+    private UsageBreakdown? _data;
+
+    protected override async Task LoadAsync() =>
+        _data = await Breakdown.GetAsync(_period, _orgId == 0 ? null : _orgId);
+
+    private static string Share(decimal v, UsageBreakdown d) => d.Total <= 0 ? "–" : Format.Percent((double)(v / d.Total * 100));
+
+    private string DayName(int day)
+    {
+        var (y, m) = Period.Parse(_period);
+        return new DateTime(y, m, day).ToString("dddd d MMM", System.Globalization.CultureInfo.InvariantCulture);
+    }
+}

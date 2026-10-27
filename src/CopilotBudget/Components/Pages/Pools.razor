@@ -1,0 +1,326 @@
+@page "/pools"
+@inject PoolService PoolSvc
+
+<PageTitle>Credit pools · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.InUserbase)
+{
+    <NoOrgNotice />
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Credit pools</h1>
+            <p>Prepaid @Session.UnitLabel that don't expire. A personal reserve belongs to one person; a shared pool feeds a group.
+               Credits stay in the pool until someone uses them.</p>
+        </div>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <h2 class="section-title">Yours<span class="count">@Mine.Count()</span></h2>
+    @if (!Mine.Any())
+    {
+        <div class="card empty"><Icon Name="wallet" Size="28" /><strong>You're not in any credit pools</strong>Admins can set up a personal reserve for you or add you to a shared pool.</div>
+    }
+    <div class="pool-cards">
+        @foreach (var v in Mine)
+        {
+            <section class="card pool-card">
+                @PoolHeader(v)
+                @if (v.Balance > 0)
+                {
+                    <div class="pool-draw">
+                        <label for="@($"draw-{v.Pool.Id}")">Use credits this month</label>
+                        <div class="row">
+                            <input id="@($"draw-{v.Pool.Id}")" type="number" min="1" step="1" max="@v.Balance" style="flex:1"
+                                   @bind="_draw[v.Pool.Id]" @bind:event="oninput" />
+                            <button class="btn primary" disabled="@(_busy || _draw.GetValueOrDefault(v.Pool.Id) <= 0 || _draw.GetValueOrDefault(v.Pool.Id) > v.Balance)"
+                                    @onclick="() => Draw(v)">Add to my budget</button>
+                        </div>
+                        <AmountSlider Value="_draw.GetValueOrDefault(v.Pool.Id)" ValueChanged="x => _draw[v.Pool.Id] = x" Max="v.Balance" Label="@($"Credits to take from {v.Pool.Name}")" />
+                        <div class="hint">
+                            Taken credits join your budget for this month and expire at the reset like the rest of it.
+                            @if (v.Pool.AutoCover) { <text>Auto-cover is on, so you only need this to get ahead; going over is covered automatically.</text> }
+                        </div>
+                    </div>
+                }
+                @PoolActivity(v)
+            </section>
+        }
+    </div>
+
+    @if (Session.IsAppAdmin)
+    {
+        <h2 class="section-title mt">All pools<span class="count">@_pools.Count</span></h2>
+        <div class="pool-cards">
+            @foreach (var v in _pools)
+            {
+                var edit = _editing == v.Pool.Id;
+                <section class="card pool-card">
+                    @PoolHeader(v)
+
+                    @{ var amount = _add.GetValueOrDefault(v.Pool.Id); }
+                    <form class="row mt" @onsubmit="() => ChangeCredits(v, add: true)">
+                        <input type="number" min="1" step="1" style="width:120px" placeholder="Credits" @bind="_add[v.Pool.Id]" @bind:event="oninput" aria-label="@($"Credits for {v.Pool.Name}")" />
+                        <input style="flex:1;min-width:140px" placeholder="Note, e.g. PO number" maxlength="200" @bind="_addNote[v.Pool.Id]" aria-label="Note" />
+                        <button class="btn sm" type="submit" disabled="@(_busy || amount <= 0)"><Icon Name="plus" Size="14" /> Add</button>
+                        <button class="btn ghost sm" type="button" disabled="@(_busy || amount <= 0 || amount > v.Balance)"
+                                title="Take unused credits back out of the pool" @onclick="() => ChangeCredits(v, add: false)">Remove</button>
+                    </form>
+                    <div class="hint">Add a purchase or top-up, or remove credits nobody has used yet (up to the @Session.WithUnit(Math.Max(0, v.Balance)) left).</div>
+
+                    @if (edit)
+                    {
+                        <div class="pool-edit mt">
+                            <div class="field">
+                                <label>@(v.Pool.IsShared ? "Members" : "Reserve for")</label>
+                                @PeoplePicker(_editMembers, v.Pool.IsShared, $"edit-{v.Pool.Id}")
+                            </div>
+                            @if (v.Pool.IsShared)
+                            {
+                                <div class="field">
+                                    <label for="@($"refill-{v.Pool.Id}")">Monthly top-up (optional)</label>
+                                    <input id="@($"refill-{v.Pool.Id}")" type="number" min="0" step="1" @bind="_editRefill" placeholder="None" />
+                                    <div class="hint">Tops the pool back up to this amount on the 1st of each month. Leave empty for prepaid credits that only change when you add them.</div>
+                                </div>
+                            }
+                            <label class="switch"><input type="checkbox" @bind="_editAutoCover" /><span class="switch-track" aria-hidden="true"></span><span class="switch-label">Auto-cover members who go over budget</span></label>
+                            <div class="row mt">
+                                <button class="btn primary sm" disabled="@_busy" @onclick="() => SaveEdit(v)">Save</button>
+                                <button class="btn ghost sm" @onclick="() => _editing = null">Cancel</button>
+                            </div>
+                        </div>
+                    }
+                    <div class="row mt pool-admin-actions">
+                        @if (!edit) { <button class="btn ghost sm" @onclick="() => StartEdit(v)">Edit</button> }
+                        @if (_confirmArchive == v.Pool.Id)
+                        {
+                            <button class="btn danger sm" @onclick="() => Archive(v)">Confirm archive</button>
+                            <button class="btn ghost sm" @onclick="() => _confirmArchive = null">Keep</button>
+                        }
+                        else
+                        {
+                            <button class="btn ghost sm" @onclick="() => _confirmArchive = v.Pool.Id" title="Stop using this pool. Its history is kept.">Archive</button>
+                        }
+                    </div>
+                    @PoolActivity(v)
+                </section>
+            }
+
+            <section class="card pool-card add">
+                <div class="card-header">
+                    <div>
+                        <h2>New credit pool</h2>
+                        <p>Prepaid credits for one person, or a shared pot for a group.</p>
+                    </div>
+                </div>
+                <form @onsubmit="Create">
+                    <div class="seg mb" role="radiogroup" aria-label="Kind of pool">
+                        <button type="button" class="@(!_newShared ? "active" : "")" role="radio" aria-checked="@(!_newShared ? "true" : "false")" @onclick="() => SetNewShared(false)">Personal reserve</button>
+                        <button type="button" class="@(_newShared ? "active" : "")" role="radio" aria-checked="@(_newShared ? "true" : "false")" @onclick="() => SetNewShared(true)">Shared pool</button>
+                    </div>
+                    <div class="field">
+                        <label for="pool-name">Name</label>
+                        <input id="pool-name" maxlength="80" @bind="_newName" @bind:event="oninput" placeholder="@(_newShared ? "e.g. Data science team" : "e.g. Barbara's prepaid pack")" />
+                    </div>
+                    <div class="field">
+                        <label>@(_newShared ? "Members" : "Reserve for")</label>
+                        @PeoplePicker(_newMembers, _newShared, "new")
+                    </div>
+                    <div class="field">
+                        <label for="pool-start">Starting credits</label>
+                        <input id="pool-start" type="number" min="0" step="1" @bind="_newStart" />
+                    </div>
+                    @if (_newShared)
+                    {
+                        <div class="field">
+                            <label for="pool-refill">Monthly top-up (optional)</label>
+                            <input id="pool-refill" type="number" min="0" step="1" @bind="_newRefill" placeholder="None" />
+                            <div class="hint">Leave empty for prepaid credits that never expire. Set it to give the group a fresh amount each month.</div>
+                        </div>
+                    }
+                    <div class="field">
+                        <label for="pool-note">Note (optional)</label>
+                        <input id="pool-note" maxlength="200" @bind="_newNote" placeholder="e.g. PO 4471, bought 1 Oct" />
+                    </div>
+                    <label class="switch"><input type="checkbox" @bind="_newAutoCover" /><span class="switch-track" aria-hidden="true"></span><span class="switch-label">Auto-cover members who go over budget</span></label>
+                    <div class="mt">
+                        <button class="btn primary" type="submit" disabled="@(_busy || string.IsNullOrWhiteSpace(_newName) || _newMembers.Count == 0)">
+                            <Icon Name="plus" Size="16" /> Create @(_newShared ? "pool" : "reserve")
+                        </button>
+                    </div>
+                </form>
+            </section>
+        </div>
+    }
+}
+
+@code {
+    private List<PoolView> _pools = [];
+    private List<AppUser> _people = [];
+    private readonly Dictionary<int, List<PoolEntry>> _entries = [];
+    private readonly Dictionary<int, decimal> _draw = [];
+    private readonly Dictionary<int, decimal> _add = [];
+    private readonly Dictionary<int, string> _addNote = [];
+    private bool _busy;
+
+    private int? _editing;
+    private HashSet<int> _editMembers = [];
+    private decimal? _editRefill;
+    private bool _editAutoCover;
+    private int? _confirmArchive;
+
+    private bool _newShared;
+    private string _newName = "";
+    private HashSet<int> _newMembers = [];
+    private decimal _newStart = 1000;
+    private decimal? _newRefill;
+    private string _newNote = "";
+    private bool _newAutoCover = true;
+    private string _pickerFilter = "";
+
+    private IEnumerable<PoolView> Mine => _pools.Where(p => p.HasMember(Session.User!.Id));
+
+    protected override async Task LoadAsync()
+    {
+        _pools = await PoolSvc.GetPoolsAsync();
+        foreach (var v in _pools)
+        {
+            _entries[v.Pool.Id] = await PoolSvc.GetEntriesAsync(v.Pool.Id, take: 5);
+            _draw.TryAdd(v.Pool.Id, Math.Min(100, v.Balance));
+            _add.TryAdd(v.Pool.Id, 0);
+            _addNote.TryAdd(v.Pool.Id, "");
+        }
+        if (Session.IsAppAdmin && _people.Count == 0) _people = await Budgets.GetPeopleAsync();
+    }
+
+    private RenderFragment PoolHeader(PoolView v) => @<div>
+        <div class="card-header">
+            <div>
+                <h2>@v.Pool.Name</h2>
+                <p>
+                    <span class="badge @(v.Pool.IsShared ? "accent" : "neutral")">@(v.Pool.IsShared ? "Shared pool" : "Personal reserve")</span>
+                    @if (v.Pool.AutoCover) { <span class="badge good dot" title="Members who go over budget are covered automatically">Auto-cover</span> }
+                </p>
+            </div>
+        </div>
+        <div class="pool-balance">
+            <div class="figure">@Session.Amt(v.Balance)<small>@Session.Unit left</small></div>
+            <div class="muted small">
+                @(v.Pool.MonthlyRefill is { } refill ? $"Tops up to {Session.Amt(refill)} on the 1st" : "Never expires")
+                @if (v.UsedThisMonth > 0) { <text> · @Session.Amt(v.UsedThisMonth) used this month</text> }
+            </div>
+        </div>
+        <div class="pool-members">
+            @foreach (var m in v.Members) { <span class="pool-member"><Avatar User="m" Size="20" /><Who User="m" /></span> }
+        </div>
+        @if (!string.IsNullOrEmpty(v.Pool.Note)) { <div class="muted small mt">@v.Pool.Note</div> }
+    </div>;
+
+    private RenderFragment PoolActivity(PoolView v) => @<div class="pool-activity">
+        @if (_entries.GetValueOrDefault(v.Pool.Id) is { Count: > 0 } entries)
+        {
+            <div class="label">Recent activity</div>
+            @foreach (var e in entries)
+            {
+                <div class="pool-entry">
+                    <span>@EntryText(e)</span>
+                    <span class="@(e.Amount >= 0 ? "amount-in" : "amount-out")">@Session.Signed(e.Amount)</span>
+                    <span class="muted" title="@Format.Timestamp(e.CreatedUtc)">@Format.Relative(e.CreatedUtc)</span>
+                </div>
+            }
+        }
+    </div>;
+
+    private RenderFragment PeoplePicker(HashSet<int> selected, bool multiple, string id) => @<div class="people-picker">
+        <input type="search" placeholder="Filter people" @bind="_pickerFilter" @bind:event="oninput" aria-label="Filter people" />
+        <div class="people-picker-list" role="@(multiple ? "group" : "radiogroup")">
+            @foreach (var p in _people.Where(p => string.IsNullOrWhiteSpace(_pickerFilter) || p.Login.Contains(_pickerFilter, StringComparison.OrdinalIgnoreCase)
+                                                  || (p.Name?.Contains(_pickerFilter, StringComparison.OrdinalIgnoreCase) ?? false)))
+            {
+                var person = p;
+                <label class="people-pick @(selected.Contains(person.Id) ? "selected" : "")">
+                    <input type="@(multiple ? "checkbox" : "radio")" name="@($"pick-{id}")" checked="@selected.Contains(person.Id)"
+                           @onchange="e => Toggle(selected, person.Id, multiple, e)" />
+                    <Person User="person" Size="22" ShowLogin="true" />
+                </label>
+            }
+        </div>
+        <div class="hint">@(multiple ? $"{selected.Count} selected" : selected.Count == 1 ? "1 selected" : "Choose one person")</div>
+    </div>;
+
+    private static void Toggle(HashSet<int> selected, int id, bool multiple, ChangeEventArgs e)
+    {
+        var on = e.Value is bool b ? b : e.Value?.ToString() is "on" or "true";
+        if (!multiple) selected.Clear();
+        if (on) selected.Add(id); else selected.Remove(id);
+    }
+
+    private string EntryText(PoolEntry e) => e.Type switch
+    {
+        PoolEntryType.Added => "Credits added" + (e.Note is null ? "" : $" · {e.Note}"),
+        PoolEntryType.Removed => "Credits removed" + (e.Note is null ? "" : $" · {e.Note}"),
+        PoolEntryType.Refill => "Monthly top-up",
+        PoolEntryType.AutoCover => $"Covered {e.User?.Login} going over budget",
+        _ => $"{e.User?.Login} used credits",
+    };
+
+    private void SetNewShared(bool shared)
+    {
+        _newShared = shared;
+        if (!shared && _newMembers.Count > 1) _newMembers = [_newMembers.First()];
+    }
+
+    private void StartEdit(PoolView v)
+    {
+        _editing = v.Pool.Id;
+        _editMembers = v.Members.Select(m => m.Id).ToHashSet();
+        _editRefill = v.Pool.MonthlyRefill;
+        _editAutoCover = v.Pool.AutoCover;
+        _pickerFilter = "";
+    }
+
+    private Task Draw(PoolView v) => Run(() => PoolSvc.DrawAsync(Session.User!.Id, v.Pool.Id, _draw.GetValueOrDefault(v.Pool.Id)));
+
+    /// <summary>Adds or removes the amount typed in. The amount is always entered as a positive number.</summary>
+    private Task ChangeCredits(PoolView v, bool add) => Run(async () =>
+    {
+        var amount = Math.Abs(_add.GetValueOrDefault(v.Pool.Id));
+        var result = await PoolSvc.AddCreditsAsync(Session.User!.Id, v.Pool.Id, add ? amount : -amount, _addNote.GetValueOrDefault(v.Pool.Id));
+        if (result.Ok) { _add[v.Pool.Id] = 0; _addNote[v.Pool.Id] = ""; }
+        return result;
+    });
+
+    private Task SaveEdit(PoolView v) => Run(async () =>
+    {
+        var result = await PoolSvc.UpdateAsync(Session.User!.Id, v.Pool.Id, _editMembers, _editAutoCover, _editRefill);
+        if (result.Ok) _editing = null;
+        return result;
+    });
+
+    private Task Archive(PoolView v) => Run(() => { _confirmArchive = null; return PoolSvc.ArchiveAsync(Session.User!.Id, v.Pool.Id); });
+
+    private Task Create() => Run(async () =>
+    {
+        var result = await PoolSvc.CreateAsync(Session.User!.Id, _newName, _newShared, _newMembers, _newStart, _newRefill, _newAutoCover, _newNote);
+        if (result.Ok)
+        {
+            _newName = ""; _newMembers = []; _newStart = 1000; _newRefill = null; _newNote = ""; _newAutoCover = true; _pickerFilter = "";
+        }
+        return result;
+    });
+
+    private async Task Run(Func<Task<OpResult>> action)
+    {
+        if (_busy) return;
+        _busy = true;
+        try { await ShowAsync(await action()); }
+        finally { _busy = false; }
+    }
+}

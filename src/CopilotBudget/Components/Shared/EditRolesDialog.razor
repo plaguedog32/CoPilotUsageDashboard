@@ -1,0 +1,101 @@
+@* Admin dialog: choose the roles assigned to one person in the app. Roles that come from Entra or App:Admins are shown
+   as on and locked, since they're managed elsewhere. *@
+@inject BudgetService Budgets
+@inject UserSession Session
+
+<div class="modal-backdrop" @onclick="Cancel">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="roles-dialog-title"
+         @onclick:stopPropagation="true" @onkeydown="OnKeyDown">
+        <div class="modal-header">
+            <h2 id="roles-dialog-title">Roles for @Person.Login</h2>
+            <button class="btn ghost sm" type="button" aria-label="Close" @onclick="Cancel"><Icon Name="x" Size="16" /></button>
+        </div>
+
+        <div class="modal-to">
+            <Person User="Person" Size="32" ShowLogin="true" />
+        </div>
+
+        <form @onsubmit="Save" class="mt">
+            <fieldset class="role-options">
+                <legend class="sr-only">Roles</legend>
+                @foreach (var role in BudgetService.AllRoles)
+                {
+                    var fromEntra = Person.DirectoryRoles.HasFlag(role);
+                    var fromConfig = role == AppRole.Admin && Budgets.IsConfiguredAdmin(Person);
+                    var locked = fromEntra || fromConfig;
+                    var on = locked || _selected.HasFlag(role);
+                    <label class="role-option @(on ? "on" : "") @(locked ? "locked" : "")">
+                        <input type="checkbox" checked="@on" disabled="@locked" @onchange="e => Toggle(role, e)" />
+                        <span>
+                            <strong>@Capitalize(BudgetService.RoleName(role))</strong>
+                            <span class="muted small">@Describe(role)</span>
+                            @if (fromConfig) { <span class="small warn-text">Always on: listed in the App:Admins setting.</span> }
+                            else if (fromEntra) { <span class="small warn-text">On through Entra (role mappings). Change it in Entra.</span> }
+                        </span>
+                    </label>
+                }
+            </fieldset>
+
+            @if (_error is not null)
+            {
+                <div class="hint" role="alert" style="color:#f07a7a">@_error</div>
+            }
+            <div class="modal-actions">
+                <button class="btn ghost" type="button" @onclick="Cancel">Cancel</button>
+                <button class="btn primary" type="submit" disabled="@(_busy || _selected == Person.AssignedRoles)">Save roles</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public AppUser Person { get; set; } = default!;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<OpResult> OnSaved { get; set; }
+
+    private AppRole _selected;
+    private bool _busy;
+    private string? _error;
+
+    protected override void OnInitialized() => _selected = Person.AssignedRoles;
+
+    private void Toggle(AppRole role, ChangeEventArgs e)
+    {
+        var on = e.Value is bool b ? b : e.Value?.ToString() is "on" or "true";
+        _selected = on ? _selected | role : _selected & ~role;
+    }
+
+    private static string Describe(AppRole role) => role switch
+    {
+        AppRole.Admin => "Everything: settings, roles, every budget and page.",
+        AppRole.Approver => "Approves transfers between people when approval is on.",
+        AppRole.BudgetAuthority => "Approves changes that raise total spend.",
+        AppRole.BudgetVisibility => "Sees everyone's budgets, history and month-end reports (read-only).",
+        AppRole.IntegrationAdmin => "Runs the GitHub and Microsoft connections and account links. Not budgets or roles.",
+        AppRole.Auditor => "Reads everything, including the audit log. Changes nothing.",
+        _ => "",
+    };
+
+    private static string Capitalize(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await Cancel();
+    }
+
+    private Task Cancel() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private async Task Save()
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var result = await Budgets.SetRolesAsync(Session.User!.Id, Person.Id, _selected);
+            if (result.Ok) await OnSaved.InvokeAsync(result);
+            else _error = result.Message;
+        }
+        finally { _busy = false; }
+    }
+}

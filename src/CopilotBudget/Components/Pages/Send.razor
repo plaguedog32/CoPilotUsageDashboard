@@ -1,0 +1,11 @@
+@page "/send"
+@page "/give"
+@inject NavigationManager Nav
+@* Sending credits is a tab on the Requests page now; old links land there. *@
+
+@code {
+    [SupplyParameterFromQuery(Name = "to")] private string? ToLogin { get; set; }
+
+    protected override void OnInitialized() =>
+        Nav.NavigateTo("requests?tab=send" + (string.IsNullOrEmpty(ToLogin) ? "" : "&to=" + Uri.EscapeDataString(ToLogin)), replace: true);
+}

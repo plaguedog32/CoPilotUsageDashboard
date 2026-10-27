@@ -1,0 +1,98 @@
+@page "/admin/audit"
+@inject AuditLog Audit
+@inject IJSRuntime JS
+
+<PageTitle>Audit log · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.CanViewAudit)
+{
+    <div class="card empty"><strong>Admins and auditors only</strong></div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Audit log</h1>
+            <p>Every admin action: settings, roles, budgets, approvals, pools, organizations, account links, credentials and write-back.
+                Entries are only ever added. Credit transfers and requests are in History.</p>
+        </div>
+        <button class="btn" @onclick="Export"><Icon Name="history" Size="15" /> Export CSV</button>
+    </div>
+
+    <div class="row mb">
+        <input type="search" placeholder="Search who, what or whom" @bind="_text" @bind:event="oninput" @bind:after="ReloadAsync" style="flex:1;max-width:340px" aria-label="Search" />
+        <select @bind="_action" @bind:after="ReloadAsync" aria-label="Kind of action">
+            <option value="">Everything</option>
+            @foreach (var (prefix, label) in Kinds) { <option value="@prefix">@label</option> }
+        </select>
+        <select @bind="_days" @bind:after="ReloadAsync" aria-label="Period">
+            <option value="1">Last day</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="365">Last year</option>
+            <option value="0">All time</option>
+        </select>
+    </div>
+
+    <section class="card">
+        @if (_entries.Count == 0)
+        {
+            <div class="empty"><strong>Nothing matches</strong></div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>When</th><th>Who</th><th>Action</th><th>What happened</th></tr></thead>
+                    <tbody>
+                        @foreach (var e in _entries)
+                        {
+                            <tr>
+                                <td class="secondary small nowrap" title="@Format.Timestamp(e.CreatedUtc)">@Format.Timestamp(e.CreatedUtc)</td>
+                                <td class="nowrap">@e.ActorName</td>
+                                <td class="mono small nowrap">@e.Action</td>
+                                <td class="small">
+                                    @e.Summary
+                                    @if (!string.IsNullOrEmpty(e.Details))
+                                    {
+                                        <details><summary class="muted">Details</summary><code class="small" style="overflow-wrap:anywhere">@e.Details</code></details>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (_entries.Count >= 500) { <p class="muted small mt">Showing the latest 500. Narrow the search, or export.</p> }
+        }
+    </section>
+}
+
+@code {
+    private static readonly (string Prefix, string Label)[] Kinds =
+    [
+        ("roles.", "Roles"), ("mapping.", "Role mappings, emails and account links"), ("budget.", "Budgets and proposals"),
+        ("settings.", "Settings"), ("transfer.", "Transfer approvals"), ("request.", "Requests"), ("pool.", "Credit pools"),
+        ("org.", "Organizations"), ("people.", "People who left"), ("writeback.", "GitHub write-back"), ("credentials.", "Credentials"),
+        ("alert.", "Alerts"), ("report.", "Reports"), ("github.", "GitHub account changes"),
+    ];
+
+    private List<AuditEntry> _entries = [];
+    private string _text = "";
+    private string _action = "";
+    private int _days = 30;
+
+    protected override async Task LoadAsync() =>
+        _entries = await Audit.SearchAsync(_text, _action, _days == 0 ? null : DateTime.UtcNow.AddDays(-_days));
+
+    private async Task Export()
+    {
+        var all = await Audit.SearchAsync(_text, _action, _days == 0 ? null : DateTime.UtcNow.AddDays(-_days), take: 100_000);
+        await Audit.RecordAsync(Session.User!.Id, "report.audit-export", $"Exported {all.Count} audit entries");
+        await JS.InvokeVoidAsync("copilotBudget.download", $"copilot-budget-audit-{DateTime.UtcNow:yyyyMMdd}.csv", "text/csv", AuditLog.ToCsv(all));
+    }
+}

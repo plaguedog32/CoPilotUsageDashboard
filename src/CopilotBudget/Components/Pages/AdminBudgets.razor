@@ -1,0 +1,222 @@
+@page "/admin/budgets"
+@inject BudgetChangeService Changes
+
+<PageTitle>Budgets &amp; exceptions · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.IsManager && !Session.IsBudgetAuthority && !Session.CanSeeEveryone)
+{
+    <div class="card empty"><strong>Admins only</strong>Ask an org owner or app admin if you need changes made.</div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Budgets &amp; exceptions</h1>
+            <p>Each person gets their organization's monthly budget unless an admin sets theirs. Temporary exceptions add credits between two dates.
+                @(Session.Settings.RequireBudgetAuthority ? "Anything that raises total spend waits for a budget authority." : "Budget authority approval is off.")</p>
+        </div>
+        <a class="btn ghost sm" href="admin">Back to admin</a>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <section class="card mb">
+        <div class="card-header">
+            <div>
+                <h2>Waiting for a budget authority<span class="count">@_pending.Count</span></h2>
+                <p>Increases to total spend. Nothing changes until one is approved. Undecided proposals expire at month end.</p>
+            </div>
+        </div>
+        @if (_pending.Count == 0)
+        {
+            <div class="empty small"><Icon Name="check" Size="24" /><strong>Nothing waiting</strong></div>
+        }
+        @foreach (var p in _pending)
+        {
+            var mine = p.ProposedById == Session.User!.Id;
+            <article class="request">
+                <Avatar User="p.ProposedBy" Size="32" />
+                <div>
+                    <div class="row">
+                        <strong>@p.ProposedBy.Login</strong>
+                        <span class="muted small">proposed · @Format.Relative(p.CreatedUtc)</span>
+                    </div>
+                    <div class="reason">@p.Summary@(string.IsNullOrEmpty(p.Note) || p.Kind == BudgetChangeKind.Exception ? "" : $" — {p.Note}")</div>
+                    @if (p.Kind == BudgetChangeKind.Exception && p.BudgetException is { } ex) { <div class="muted small">@ex.Reason</div> }
+                    <div class="actions">
+                        @if (Session.IsBudgetAuthority && !mine)
+                        {
+                            <input placeholder="Note (optional)" @bind="_notes[p.Id]" @bind:event="oninput" aria-label="Note" />
+                            <button class="btn primary sm" disabled="@_busy" @onclick="() => Run(() => Changes.ApproveProposalAsync(Session.User!.Id, p.Id, _notes.GetValueOrDefault(p.Id)))"><Icon Name="check" Size="15" /> Approve</button>
+                            <button class="btn danger sm" disabled="@_busy" @onclick="() => Run(() => Changes.RejectProposalAsync(Session.User!.Id, p.Id, _notes.GetValueOrDefault(p.Id)))"><Icon Name="x" Size="15" /> Reject</button>
+                        }
+                        else if (mine)
+                        {
+                            <button class="btn sm" disabled="@_busy" @onclick="() => Run(() => Changes.RejectProposalAsync(Session.User!.Id, p.Id, null))">Withdraw</button>
+                        }
+                        else
+                        {
+                            <span class="muted small">Waiting for a budget authority.</span>
+                        }
+                    </div>
+                </div>
+                <div class="amount amount-out">@Session.Signed(p.SpendChange)<small>@Session.Unit</small></div>
+            </article>
+        }
+    </section>
+
+    <div class="grid grid-main">
+        <section class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Monthly budget per person</h2>
+                    <p>Org default, or an amount set for the person. Exceptions are added on top.</p>
+                </div>
+                <input type="search" placeholder="Filter people" @bind="_filter" @bind:event="oninput" aria-label="Filter people" style="max-width:200px" />
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Person</th><th class="num">Org default</th><th class="num">Set for them</th><th class="num">Exceptions</th><th class="num">Monthly budget</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var b in _people.Where(Matches))
+                        {
+                            <tr>
+                                <td><Person User="b.User" Size="24" ShowLogin="true" /></td>
+                                <td class="num secondary">@Session.Amt(b.DefaultBudget)</td>
+                                <td class="num">
+                                    @if (b.User.MonthlyBudgetOverride is { } o) { <strong title="@b.User.OverrideNote">@Session.Amt(o)</strong> }
+                                    else { <span class="muted">–</span> }
+                                </td>
+                                <td class="num">@(b.ExceptionCredits == 0 ? "–" : Session.Signed(b.ExceptionCredits))</td>
+                                <td class="num"><strong>@Session.Amt(b.MonthlyBudget)</strong></td>
+                                <td class="nowrap" style="text-align:right">
+                                    @if (Session.CanAdjust(b))
+                                    {
+                                        <button class="btn ghost sm" @onclick="() => Open(b, BudgetChangeKind.PersonOverride)">Set budget</button>
+                                        <button class="btn ghost sm" @onclick="() => Open(b, BudgetChangeKind.Exception)">Add exception</button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <aside class="stack">
+            <section class="card">
+                <div class="card-header">
+                    <div>
+                        <h2>Temporary exceptions</h2>
+                        <p>Current and upcoming.</p>
+                    </div>
+                </div>
+                @if (_exceptions.Count == 0)
+                {
+                    <div class="empty small"><strong>None</strong>Use “Add exception” next to a person.</div>
+                }
+                <div class="feed">
+                    @foreach (var e in _exceptions)
+                    {
+                        var active = e.IsActiveOn(DateTime.UtcNow);
+                        <div class="feed-item">
+                            <Avatar User="e.User" Size="28" />
+                            <div class="text">
+                                <strong>@e.User.Login</strong> <span class="@(e.Amount >= 0 ? "amount-in" : "amount-out")">@Session.Signed(e.Amount)</span> a month
+                                <div class="muted small">@e.StartDate.ToString("d MMM") – @e.EndDate.ToString("d MMM yyyy") · @e.Reason</div>
+                                <div class="small">
+                                    @if (!e.IsApproved) { <span class="badge warning dot">Waiting for approval</span> }
+                                    else if (active) { <span class="badge good dot">Active</span> }
+                                    else { <span class="badge neutral">Starts @e.StartDate.ToString("d MMM")</span> }
+                                </div>
+                            </div>
+                            @if (e.IsApproved && Session.IsManager)
+                            {
+                                <button class="btn ghost sm" disabled="@_busy" @onclick="() => Run(() => Changes.CancelExceptionAsync(Session.User!.Id, e.Id))">End</button>
+                            }
+                        </div>
+                    }
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="card-header"><h2>Recent decisions</h2></div>
+                @if (_decided.Count == 0)
+                {
+                    <div class="empty small"><strong>None yet</strong></div>
+                }
+                <div class="feed">
+                    @foreach (var p in _decided)
+                    {
+                        <div class="feed-item">
+                            <Avatar User="p.DecidedBy ?? p.ProposedBy" Size="28" />
+                            <div class="text">
+                                @p.Summary
+                                <div class="muted small">
+                                    @(p.Status switch { ProposalStatus.Applied => "Approved", ProposalStatus.Rejected => "Rejected", ProposalStatus.Expired => "Expired", _ => "Withdrawn" })
+                                    @(p.DecidedBy is null ? "" : "by " + p.DecidedBy.Login) · @Format.Relative(p.DecidedUtc)
+                                    @(string.IsNullOrEmpty(p.DecisionNote) ? "" : $" · {p.DecisionNote}")
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+            </section>
+        </aside>
+    </div>
+
+    @if (_changing is not null)
+    {
+        <BudgetChangeDialog Person="_changing" InitialKind="_changeKind" OnClose="() => _changing = null" OnDone="Done" />
+    }
+}
+
+@code {
+    private List<BudgetProposal> _pending = [];
+    private List<BudgetProposal> _decided = [];
+    private List<BudgetException> _exceptions = [];
+    private List<MemberBudget> _people = [];
+    private readonly Dictionary<int, string> _notes = [];
+    private string _filter = "";
+    private bool _busy;
+    private MemberBudget? _changing;
+    private BudgetChangeKind _changeKind;
+
+    protected override async Task LoadAsync()
+    {
+        var all = await Changes.GetProposalsAsync();
+        _pending = all.Where(p => p.Status == ProposalStatus.Pending).OrderBy(p => p.CreatedUtc).ToList();
+        _decided = all.Where(p => p.Status != ProposalStatus.Pending).OrderByDescending(p => p.DecidedUtc).Take(8).ToList();
+        foreach (var p in _pending) _notes.TryAdd(p.Id, "");
+        _exceptions = await Changes.GetExceptionsAsync();
+        _people = (await Budgets.GetBudgetsAsync(Period.Current)).Where(b => b.HasSeat && !b.User.IsDisabled).ToList();
+    }
+
+    private bool Matches(MemberBudget b) => string.IsNullOrWhiteSpace(_filter)
+        || b.User.Login.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+        || (b.User.Name?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false);
+
+    private void Open(MemberBudget b, BudgetChangeKind kind)
+    {
+        _changeKind = kind;
+        _changing = b;
+    }
+
+    private async Task Done(OpResult result)
+    {
+        _changing = null;
+        await ShowAsync(result);
+    }
+
+    private async Task Run(Func<Task<OpResult>> action)
+    {
+        if (_busy) return;
+        _busy = true;
+        try { await ShowAsync(await action()); }
+        finally { _busy = false; }
+    }
+}

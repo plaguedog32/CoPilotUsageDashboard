@@ -1,0 +1,123 @@
+@* Admin-only: move credits from one person to another straight away, with both balances shown first. *@
+@inject BudgetService Budgets
+@inject UserSession Session
+
+<div class="modal-backdrop" @onclick="Cancel">
+    <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="move-dialog-title"
+         @onclick:stopPropagation="true" @onkeydown="OnKeyDown">
+        <div class="modal-header">
+            <h2 id="move-dialog-title">Move credits</h2>
+            <button class="btn ghost sm" type="button" aria-label="Close" @onclick="Cancel"><Icon Name="x" Size="16" /></button>
+        </div>
+        <p class="secondary small">
+            As an admin you can move unused credits between people. It happens straight away: no approval, and the minimum-to-keep rule
+            doesn't apply. Both people are told why, and it's recorded in the audit log.
+        </p>
+
+        <form @onsubmit="Submit">
+            <div class="row">
+                <div class="field" style="flex:1">
+                    <label for="move-from">From</label>
+                    <select id="move-from" @bind="_fromId" @bind:after="Clamp">
+                        @foreach (var b in People.Where(b => b.Available > 0 || b.User.Id == _fromId))
+                        {
+                            <option value="@b.User.Id">@b.User.Login · @Session.Amt(Math.Max(0, b.Available)) left@(b.User.IsDisabled ? " (left)" : "")</option>
+                        }
+                    </select>
+                </div>
+                <div class="field" style="flex:1">
+                    <label for="move-to">To</label>
+                    <select id="move-to" @bind="_toId">
+                        <option value="0">Choose someone…</option>
+                        @foreach (var b in People.Where(b => b.User.Id != _fromId && !b.User.IsDisabled))
+                        {
+                            <option value="@b.User.Id">@b.User.Login · @Session.Amt(b.Available) left</option>
+                        }
+                    </select>
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="move-amount">Amount (credits) <span class="muted">@Session.DollarHint(_amount)</span></label>
+                <input id="move-amount" type="number" min="1" step="1" max="@Movable" @bind="_amount" @bind:event="oninput" />
+                <AmountSlider @bind-Value="_amount" Max="Movable" Label="Amount to move" />
+                @if (_amount > Movable) { <div class="hint" style="color:#f07a7a">@From?.User.Login only has @Session.WithUnit(Movable) unused.</div> }
+            </div>
+
+            <div class="field">
+                <label for="move-reason">Reason (both people see it)</label>
+                <input id="move-reason" maxlength="300" @bind="_reason" @bind:event="oninput" placeholder="e.g. Rebalancing for the release crunch" />
+            </div>
+
+            @if (From is not null && To is not null)
+            {
+                <TransferBalances SenderName="@Session.NameOf(From.User)" Sender="From.User" SenderBefore="From.Available"
+                                  RecipientName="@Session.NameOf(To.User)" Recipient="To.User" RecipientBefore="To.Available"
+                                  Amount="_amount" SkipsApproval="true" />
+            }
+
+            @if (_error is not null) { <div class="hint" role="alert" style="color:#f07a7a">@_error</div> }
+            <div class="modal-actions">
+                <button class="btn ghost" type="button" @onclick="Cancel">Cancel</button>
+                <button class="btn primary" type="submit"
+                        disabled="@(_busy || To is null || _amount <= 0 || _amount > Movable || string.IsNullOrWhiteSpace(_reason))">
+                    Move @Session.WithUnit(Math.Max(0, _amount))
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+@code {
+    /// <summary>Everyone's budget this month.</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<MemberBudget> People { get; set; } = [];
+    [Parameter] public int FromUserId { get; set; }
+    [Parameter] public int ToUserId { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<OpResult> OnMoved { get; set; }
+
+    private int _fromId;
+    private int _toId;
+    private decimal _amount = 100;
+    private string _reason = "";
+    private bool _busy;
+    private string? _error;
+
+    private MemberBudget? From => People.FirstOrDefault(b => b.User.Id == _fromId);
+    private MemberBudget? To => _toId == 0 ? null : People.FirstOrDefault(b => b.User.Id == _toId);
+    private decimal Movable => Math.Max(0, Math.Floor(From?.Available ?? 0));
+
+    protected override void OnInitialized()
+    {
+        _fromId = FromUserId;
+        _toId = ToUserId == FromUserId ? 0 : ToUserId;
+        Clamp();
+    }
+
+    private void Clamp()
+    {
+        if (_toId == _fromId) _toId = 0;
+        _amount = Math.Min(Math.Max(1, _amount), Math.Max(0, Movable));
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await Cancel();
+    }
+
+    private Task Cancel() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private async Task Submit()
+    {
+        if (_busy || To is null) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var result = await Budgets.ForceTransferAsync(Session.User!.Id, _fromId, _toId, _amount, _reason);
+            if (result.Ok) await OnMoved.InvokeAsync(result);
+            else _error = result.Message;
+        }
+        finally { _busy = false; }
+    }
+}

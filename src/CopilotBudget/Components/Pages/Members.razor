@@ -1,0 +1,240 @@
+@page "/members"
+
+<PageTitle>Members · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.InUserbase)
+{
+    <NoOrgNotice />
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Members</h1>
+            <p>Everyone in the company with a Copilot seat, and their budget for @Period.Display(Period.Current).</p>
+        </div>
+        @if (Session.IsAppAdmin)
+        {
+            <button class="btn" @onclick="() => OpenMove(0)"><Icon Name="send" Size="15" /> Move credits</button>
+        }
+        <input type="search" placeholder="@(Session.ShowsOrganizations ? "Filter by name, login or org" : "Filter by name or login")" @bind="_filter" @bind:event="oninput" aria-label="Filter members" />
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <section class="card">
+        <div class="table-wrap">
+            <table class="members-table">
+                <thead>
+                    <tr>
+                        @foreach (var c in Columns.Where(c => c.Key != SortKey.Organizations || Session.ShowsOrganizations))
+                        {
+                            <th class="@(c.Numeric ? "num" : "")" style="@(c.Key == SortKey.Usage ? "min-width:110px" : "")" aria-sort="@AriaSort(c.Key)">
+                                <button class="sort-btn @(_sortKey == c.Key ? "active" : "")" @onclick="() => SortBy(c.Key)">
+                                    @c.Label<span class="sort-arrow" aria-hidden="true">@(_sortKey != c.Key ? "↕" : _descending ? "↓" : "↑")</span>
+                                </button>
+                            </th>
+                        }
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var b in Filtered)
+                    {
+                        var latest = b.LatestActivity;
+                        <tr>
+                            <td>
+                                <div class="row" style="gap:8px">
+                                    <Person User="b.User" Size="28" FullName="true" />
+                                    @if (b.User.IsDisabled) { <span class="badge neutral" title="@b.User.DisabledReason">left</span> }
+                                </div>
+                            </td>
+                            @if (Session.ShowsOrganizations)
+                            {
+                            <td>
+                                <div class="org-tags">
+                                    @foreach (var m in b.Memberships.OrderBy(m => m.Organization.Name))
+                                    {
+                                        <span class="org-tag" title="@OrgTitle(m)">
+                                            @m.Organization.Name
+                                            @if (m.IsOrgAdmin) { <span class="badge accent">owner</span> }
+                                            @if (!m.HasSeat) { <span class="muted">· no seat</span> }
+                                            else if (m.PendingCancellationDate is not null) { <span class="muted">· ends @m.PendingCancellationDate.Value.ToString("d MMM")</span> }
+                                        </span>
+                                    }
+                                </div>
+                            </td>
+                            }
+                            <td class="secondary small nowrap">
+                                @Format.Relative(latest?.LastActivityUtc)
+                                @if (!string.IsNullOrEmpty(latest?.LastActivityEditor))
+                                {
+                                    <div class="muted">@ShortEditor(latest.LastActivityEditor)</div>
+                                }
+                            </td>
+                            <td class="num">@Session.Amt(b.Allocated)</td>
+                            <td class="num">@Session.Amt(b.Used)</td>
+                            <td class="num"><strong>@Session.Amt(b.Available)</strong></td>
+                            <td>@if (b.HasSeat) { <Meter Value="b.Used" Max="b.Allocated" Label="@($"{Format.Percent(b.PercentUsed)} used")" /> }</td>
+                            <td class="secondary small nowrap">
+                                @if (b.HasSeat && Forecast.For(b).RunOutUtc is { } runOut)
+                                {
+                                    <span class="@(runOut <= DateTime.UtcNow ? "amount-out" : "")" title="At their pace so far, GitHub stops them here">@(runOut <= DateTime.UtcNow ? "Out now" : runOut.ToString("d MMM"))</span>
+                                }
+                                else if (b.HasSeat) { <span class="muted" title="Has enough to last until the reset">–</span> }
+                            </td>
+                            <td><BudgetStatus Budget="b" /></td>
+                            <td class="nowrap" style="text-align:right">
+                                @if (Session.HasSeat && b.User.Id != Session.User?.Id && b.HasSeat && !b.User.IsDisabled)
+                                {
+                                    <button class="btn sm" @onclick="() => _sendTo = b"><Icon Name="send" Size="14" /> Send</button>
+                                }
+                                @if (Session.IsAppAdmin && b.HasSeat && b.Available > 0)
+                                {
+                                    <button class="btn ghost sm" title="Move some of their unused credits to someone else" @onclick="() => OpenMove(b.User.Id)">Move credits</button>
+                                }
+                                @if (Session.CanAdjust(b))
+                                {
+                                    <button class="btn ghost sm" @onclick="() => _changing = b">Change budget</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (!Filtered.Any())
+        {
+            <div class="empty"><strong>No members match</strong></div>
+        }
+    </section>
+
+    @if (_sendTo is not null)
+    {
+        <SendDialog Recipient="_sendTo" Available="MyAvailable" OnClose="() => _sendTo = null" OnSent="Sent" />
+    }
+    @if (_moveFrom is not null)
+    {
+        <MoveCreditsDialog People="_budgets" FromUserId="_moveFrom.Value" OnClose="() => _moveFrom = null" OnMoved="Moved" />
+    }
+    @if (_changing is not null)
+    {
+        <BudgetChangeDialog Person="_changing" OnClose="() => _changing = null" OnDone="Changed" />
+    }
+}
+
+@code {
+    private List<MemberBudget> _budgets = [];
+    private string _filter = "";
+    private MemberBudget? _changing;
+    private MemberBudget? _sendTo;
+
+    private decimal MyAvailable => _budgets.FirstOrDefault(b => b.User.Id == Session.User?.Id)?.Available ?? 0;
+
+    private enum SortKey { Member, Organizations, LastActive, Allocated, Used, Available, Usage, RunsOut, Status }
+
+    private record Column(SortKey Key, string Label, bool Numeric = false, bool DescendingFirst = false);
+
+    // Numbers and dates start with the biggest or most recent first; text starts A to Z.
+    private static readonly Column[] Columns =
+    [
+        new(SortKey.Member, "Member"),
+        new(SortKey.Organizations, "Organizations"),
+        new(SortKey.LastActive, "Last active", DescendingFirst: true),
+        new(SortKey.Allocated, "Allocated", Numeric: true, DescendingFirst: true),
+        new(SortKey.Used, "Used", Numeric: true, DescendingFirst: true),
+        new(SortKey.Available, "Available", Numeric: true, DescendingFirst: true),
+        new(SortKey.Usage, "Usage", DescendingFirst: true),
+        new(SortKey.RunsOut, "Runs out"),
+        new(SortKey.Status, "Status", DescendingFirst: true),
+    ];
+
+    private SortKey _sortKey = SortKey.Member;
+    private bool _descending;
+
+    private IEnumerable<MemberBudget> Filtered => Sorted(_budgets.Where(b =>
+        string.IsNullOrWhiteSpace(_filter)
+        || b.User.Login.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+        || (b.User.Name?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false)
+        || Session.ShowsOrganizations && b.Organizations.Any(o => o.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+                                    || o.Login.Contains(_filter, StringComparison.OrdinalIgnoreCase))));
+
+    protected override async Task LoadAsync()
+    {
+        _budgets = Session.Visible(await Budgets.GetBudgetsAsync(Period.Current)).ToList();
+    }
+
+    private void SortBy(SortKey key)
+    {
+        if (_sortKey == key) _descending = !_descending;
+        else
+        {
+            _sortKey = key;
+            _descending = Columns.First(c => c.Key == key).DescendingFirst;
+        }
+    }
+
+    private string AriaSort(SortKey key) => _sortKey != key ? "none" : _descending ? "descending" : "ascending";
+
+    /// <summary>Sorts by the chosen column, keeping people without a seat at the bottom and breaking ties by login.</summary>
+    private IEnumerable<MemberBudget> Sorted(IEnumerable<MemberBudget> rows)
+    {
+        var bySeat = rows.OrderByDescending(b => b.HasSeat);
+        IOrderedEnumerable<MemberBudget> sorted = _sortKey switch
+        {
+            SortKey.Member => Order(bySeat, b => (string.IsNullOrEmpty(b.User.Name) ? b.User.Login : b.User.Name).ToLowerInvariant()),
+            SortKey.Organizations => Order(bySeat, b => string.Join(", ", b.Organizations.Select(o => o.Name).Order()).ToLowerInvariant()),
+            SortKey.LastActive => Order(bySeat, b => b.LatestActivity?.LastActivityUtc ?? DateTime.MinValue),
+            SortKey.Allocated => Order(bySeat, b => b.Allocated),
+            SortKey.Used => Order(bySeat, b => b.Used),
+            SortKey.Available => Order(bySeat, b => b.Available),
+            SortKey.Usage => Order(bySeat, b => b.PercentUsed),
+            SortKey.RunsOut => Order(bySeat, b => Forecast.For(b).RunOutUtc ?? DateTime.MaxValue),
+            _ => Order(bySeat, StatusRank),
+        };
+        return sorted.ThenBy(b => b.User.Login, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private IOrderedEnumerable<MemberBudget> Order<T>(IOrderedEnumerable<MemberBudget> rows, Func<MemberBudget, T> key) =>
+        _descending ? rows.ThenByDescending(key) : rows.ThenBy(key);
+
+    /// <summary>Higher is more notable: over budget, running low, ahead of pace, credits to spare, on pace (matches BudgetStatus).</summary>
+    private static int StatusRank(MemberBudget b) =>
+        !b.HasSeat ? 0 : b.Available < 0 ? 5 : b.PercentUsed >= 85 ? 4 : Pace.IsAhead(b.Used, b.Allocated) ? 3
+        : Pace.IsBehind(b.Used, b.Allocated) ? 2 : 1;
+
+    private async Task Sent(OpResult result)
+    {
+        if (result.Message.StartsWith("Sent ") && !result.Message.StartsWith("Sent for approval"))
+            result = result with { Message = $"{result.Message.TrimEnd('.')} to {_sendTo?.User.Login}." };
+        _sendTo = null;
+        await ShowAsync(result);
+    }
+
+    private int? _moveFrom;
+
+    /// <summary>Opens the admin move dialog, starting from this person (or whoever has the most unused).</summary>
+    private void OpenMove(int fromUserId) =>
+        _moveFrom = fromUserId != 0 ? fromUserId : _budgets.Where(b => b.HasSeat).MaxBy(b => b.Available)?.User.Id ?? 0;
+
+    private async Task Moved(OpResult result)
+    {
+        _moveFrom = null;
+        await ShowAsync(result);
+    }
+
+    private async Task Changed(OpResult result)
+    {
+        _changing = null;
+        await ShowAsync(result);
+    }
+
+    private static string OrgTitle(Membership m) =>
+        m.HasSeat ? $"{m.PlanType ?? "Copilot"} seat in {m.Organization.Name}" : $"No Copilot seat in {m.Organization.Name}";
+
+    private static string ShortEditor(string editor) => editor.Split('/')[0];
+}

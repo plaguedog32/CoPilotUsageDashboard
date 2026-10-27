@@ -1,0 +1,190 @@
+@* Admin dialog for changing one person's budget: a one-off adjustment, their monthly budget (override), or a temporary
+   exception. Shows what the change does to total spend before it's applied, and whether a budget authority must approve. *@
+@inject BudgetChangeService Changes
+@inject UserSession Session
+
+<div class="modal-backdrop" @onclick="Cancel">
+    <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="change-dialog-title"
+         @onclick:stopPropagation="true" @onkeydown="OnKeyDown">
+        <div class="modal-header">
+            <h2 id="change-dialog-title">Change @Person.User.Login's budget</h2>
+            <button class="btn ghost sm" type="button" aria-label="Close" @onclick="Cancel"><Icon Name="x" Size="16" /></button>
+        </div>
+
+        <div class="modal-to">
+            <Person User="Person.User" Size="32" ShowLogin="true" />
+            <span class="muted small">
+                Monthly budget @Session.WithUnit(Person.MonthlyBudget)
+                @(Person.User.MonthlyBudgetOverride is not null ? "(set for them)" : $"(org default)")
+                · @Session.Amt(Person.Available) left this month
+            </span>
+        </div>
+
+        <div class="seg" role="tablist" aria-label="Kind of change">
+            <button type="button" role="tab" class="@(_kind == BudgetChangeKind.Adjustment ? "active" : "")" @onclick="() => SetKind(BudgetChangeKind.Adjustment)">This month only</button>
+            <button type="button" role="tab" class="@(_kind == BudgetChangeKind.PersonOverride ? "active" : "")" @onclick="() => SetKind(BudgetChangeKind.PersonOverride)">Monthly budget</button>
+            <button type="button" role="tab" class="@(_kind == BudgetChangeKind.Exception ? "active" : "")" @onclick="() => SetKind(BudgetChangeKind.Exception)">Temporary exception</button>
+        </div>
+
+        <form @onsubmit="Submit" class="mt">
+            @switch (_kind)
+            {
+                case BudgetChangeKind.Adjustment:
+                    <div class="field">
+                        <div class="seg sm mb-sm" role="radiogroup" aria-label="Direction">
+                            <button type="button" role="radio" aria-checked="@(!_takeAway)" class="@(!_takeAway ? "active" : "")" @onclick="() => SetDirection(false)">Give extra</button>
+                            <button type="button" role="radio" aria-checked="@_takeAway" class="@(_takeAway ? "active" : "")" @onclick="() => SetDirection(true)">Take away</button>
+                        </div>
+                        <label for="chg-amount">@(_takeAway ? "Credits to take away this month" : "Extra credits this month") <span class="muted">@Session.DollarHint(_amount)</span></label>
+                        <input id="chg-amount" type="number" min="1" step="1" @bind="_amount" @bind:event="oninput" @bind:after="RefreshPreview" />
+                        <div class="hint">Only changes this month for this person. Nobody else is affected.</div>
+                    </div>
+                    break;
+                case BudgetChangeKind.PersonOverride:
+                    <div class="field">
+                        <label class="switch">
+                            <input type="checkbox" checked="@_useDefault" @onchange="e => { _useDefault = (bool)e.Value!; return RefreshPreview(); }" />
+                            <span class="switch-track" aria-hidden="true"></span>
+                            <span class="switch-label">Use the organization default (@Session.WithUnit(Person.DefaultBudget))</span>
+                        </label>
+                    </div>
+                    @if (!_useDefault)
+                    {
+                        <div class="field">
+                            <label for="chg-override">Monthly budget (credits) <span class="muted">@Session.DollarHint(_override)</span></label>
+                            <input id="chg-override" type="number" min="0" step="1" @bind="_override" @bind:event="oninput" @bind:after="RefreshPreview" />
+                            <div class="hint">Replaces their org default from now on, including this month.</div>
+                        </div>
+                    }
+                    break;
+                default:
+                    <div class="field">
+                        <div class="seg sm mb-sm" role="radiogroup" aria-label="Direction">
+                            <button type="button" role="radio" aria-checked="@(!_takeAway)" class="@(!_takeAway ? "active" : "")" @onclick="() => SetDirection(false)">Give extra</button>
+                            <button type="button" role="radio" aria-checked="@_takeAway" class="@(_takeAway ? "active" : "")" @onclick="() => SetDirection(true)">Take away</button>
+                        </div>
+                        <label for="chg-ex-amount">@(_takeAway ? "Fewer credits a month while it lasts" : "Extra credits a month while it lasts") <span class="muted">@Session.DollarHint(_amount)</span></label>
+                        <input id="chg-ex-amount" type="number" min="1" step="1" @bind="_amount" @bind:event="oninput" @bind:after="RefreshPreview" />
+                    </div>
+                    <div class="row">
+                        <div class="field" style="flex:1">
+                            <label for="chg-start">From</label>
+                            <input id="chg-start" type="date" @bind="_start" @bind:after="RefreshPreview" />
+                        </div>
+                        <div class="field" style="flex:1">
+                            <label for="chg-end">To (inclusive)</label>
+                            <input id="chg-end" type="date" @bind="_end" @bind:after="RefreshPreview" />
+                        </div>
+                    </div>
+                    <div class="hint">Added on top of their monthly budget from the start date, and taken off again after the end date.</div>
+                    break;
+            }
+
+            @if (_kind != BudgetChangeKind.PersonOverride || !_useDefault)
+            {
+                <div class="field">
+                    <label for="chg-note">@(_kind == BudgetChangeKind.PersonOverride ? "Note (optional)" : "Reason (required)")</label>
+                    <input id="chg-note" maxlength="300" @bind="_note" @bind:event="oninput" placeholder="e.g. On-call this month" />
+                </div>
+            }
+
+            <SpendPreviewPanel Preview="_preview" Problem="@_problem" />
+
+            @if (_error is not null)
+            {
+                <div class="hint" role="alert" style="color:#f07a7a">@_error</div>
+            }
+            <div class="modal-actions">
+                <button class="btn ghost" type="button" @onclick="Cancel">Cancel</button>
+                <button class="btn primary" type="submit" disabled="@(_busy || _preview is null)">
+                    @(_preview?.NeedsBudgetAuthority == true ? "Send for approval" : "Apply")
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public MemberBudget Person { get; set; } = default!;
+    [Parameter] public BudgetChangeKind InitialKind { get; set; } = BudgetChangeKind.Adjustment;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<OpResult> OnDone { get; set; }
+
+    private BudgetChangeKind _kind;
+    private decimal _amount = 100;
+
+    /// <summary>Whether the amount is taken away rather than given. Amounts are always entered as positive numbers.</summary>
+    private bool _takeAway;
+
+    private decimal Signed => _takeAway ? -Math.Abs(_amount) : Math.Abs(_amount);
+
+    private Task SetDirection(bool takeAway)
+    {
+        _takeAway = takeAway;
+        return RefreshPreview();
+    }
+    private decimal _override;
+    private bool _useDefault;
+    private DateTime _start = DateTime.UtcNow.Date;
+    private DateTime _end = DateTime.UtcNow.Date.AddDays(14);
+    private string _note = "";
+    private SpendPreview? _preview;
+    private string? _problem;
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _kind = InitialKind;
+        _override = Person.User.MonthlyBudgetOverride ?? Person.DefaultBudget;
+        _useDefault = Person.User.MonthlyBudgetOverride is null && InitialKind != BudgetChangeKind.PersonOverride;
+        await RefreshPreview();
+    }
+
+    private Task SetKind(BudgetChangeKind kind)
+    {
+        _kind = kind;
+        _error = null;
+        if (kind == BudgetChangeKind.PersonOverride) _useDefault = false;
+        return RefreshPreview();
+    }
+
+    private BudgetChange Change => _kind switch
+    {
+        BudgetChangeKind.PersonOverride => new(_kind, UserId: Person.User.Id, Value: _useDefault ? null : _override, Note: _note),
+        BudgetChangeKind.Exception => new(_kind, UserId: Person.User.Id, Value: Signed, Note: _note, StartDate: _start, EndDate: _end),
+        _ => new(_kind, UserId: Person.User.Id, Value: Signed, Note: _note),
+    };
+
+    /// <summary>Validates the shape of the change (not the reason) and previews it.</summary>
+    private async Task RefreshPreview()
+    {
+        var change = Change;
+        // The reason is checked on submit; preview with a placeholder so people see numbers while typing.
+        if (string.IsNullOrWhiteSpace(change.Note)) change = change with { Note = "preview" };
+        var (check, preview) = await Changes.PreviewAsync(Session.User!.Id, change);
+        _preview = preview;
+        _problem = check.Ok ? null : check.Message;
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await Cancel();
+    }
+
+    private Task Cancel() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private async Task Submit()
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var result = await Changes.SubmitAsync(Session.User!.Id, Change);
+            if (result.Ok) await OnDone.InvokeAsync(result);
+            else _error = result.Message;
+        }
+        finally { _busy = false; }
+    }
+}

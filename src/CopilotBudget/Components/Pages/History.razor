@@ -1,0 +1,128 @@
+@page "/history"
+
+<PageTitle>History · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.InUserbase)
+{
+    <NoOrgNotice />
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>History</h1>
+            <p>Every change to @(_everyone ? "anyone's" : "your") budget. Both sides of a transfer share a transfer ID; select one to see both rows.</p>
+        </div>
+        @if (Session.IsManager || Session.CanSeeEveryone)
+        {
+            <div class="tabs" style="margin:0;border:0">
+                <button class="tab @(!_everyone ? "active" : "")" @onclick="() => SetScope(false)">Mine</button>
+                <button class="tab @(_everyone ? "active" : "")" @onclick="() => SetScope(true)">Everyone</button>
+            </div>
+        }
+    </div>
+
+    @if (_transfer is not null)
+    {
+        <div class="alert mb">
+            <span class="icon"><Icon Name="info" /></span>
+            <span>Showing transfer <code>@_transfer.Value.ToString()[..8]</code>: the sender's and the recipient's rows.</span>
+            <button class="btn ghost sm" @onclick="ClearTransfer">Show all</button>
+        </div>
+    }
+
+    <section class="card">
+        @if (_entries.Count == 0)
+        {
+            <div class="empty"><Icon Name="history" Size="32" /><strong>No history yet</strong></div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>When</th>
+                            @if (_everyone || _transfer is not null) { <th>Member</th> }
+                            <th>What</th>
+                            <th>With</th>
+                            <th>Note</th>
+                            <th>Transfer</th>
+                            <th class="num">Amount</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var e in _entries)
+                        {
+                            <tr>
+                                <td class="secondary small nowrap" title="@Format.Timestamp(e.CreatedUtc)">@Format.Relative(e.CreatedUtc)</td>
+                                @if (_everyone || _transfer is not null) { <td><Person User="e.User" Size="22" /></td> }
+                                <td class="nowrap">@Format.EntryType(e.Type)</td>
+                                <td>
+                                    @if (e.Counterparty is not null) { <Person User="e.Counterparty" Size="22" /> }
+                                    else if (e.Type == LedgerEntryType.AdminAdjustment) { <span class="muted small">by <Who User="e.CreatedBy" Fallback="admin" /></span> }
+                                    else if (e.CreditPool is not null) { <span class="muted small">from @e.CreditPool.Name</span> }
+                                    else if (e.Organization is not null && Session.ShowsOrganizations) { <span class="muted small">from @e.Organization.Name</span> }
+                                </td>
+                                <td class="secondary small">@e.Note</td>
+                                <td class="mono small">
+                                    @if (e.TransferId is { } id)
+                                    {
+                                        <button class="link-btn" title="@($"Transfer {id}. Show both sides")" @onclick="() => ShowTransfer(id)">@id.ToString()[..8]</button>
+                                    }
+                                </td>
+                                <td class="num"><span class="@(e.Amount >= 0 ? "amount-in" : "amount-out")">@Session.Signed(e.Amount)</span></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private List<LedgerEntry> _entries = [];
+    private bool _everyone;
+    private bool _scopeChosen;
+    private Guid? _transfer;
+
+    private async Task ShowTransfer(Guid id)
+    {
+        _transfer = id;
+        await ReloadAsync();
+    }
+
+    private async Task ClearTransfer()
+    {
+        _transfer = null;
+        await ReloadAsync();
+    }
+
+    protected override async Task LoadAsync()
+    {
+        // People without a seat have no budget of their own, so admins among them start on Everyone.
+        if (!_scopeChosen && !Session.HasSeat && (Session.IsManager || Session.CanSeeEveryone)) _everyone = true;
+        _scopeChosen = true;
+        if (_transfer is { } t)
+        {
+            // Both rows of one transfer. People who aren't managers only see transfers they were part of.
+            var rows = await Budgets.GetHistoryAsync(transferId: t);
+            _entries = Session.IsManager || Session.CanSeeEveryone || rows.Any(r => r.UserId == Session.User!.Id) ? rows : [];
+            return;
+        }
+        _entries = _everyone && (Session.IsManager || Session.CanSeeEveryone)
+            ? await Budgets.GetHistoryAsync()
+            : await Budgets.GetHistoryAsync(Session.User!.Id);
+    }
+
+    private async Task SetScope(bool everyone)
+    {
+        _everyone = everyone;
+        await ReloadAsync();
+    }
+}

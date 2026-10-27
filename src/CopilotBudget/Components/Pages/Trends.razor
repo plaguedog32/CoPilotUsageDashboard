@@ -1,0 +1,327 @@
+@page "/trends"
+@inject TrendService TrendService
+
+<PageTitle>Trends · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.InUserbase)
+{
+    <NoOrgNotice />
+}
+else if (!Session.SeesCompanyTotals)
+{
+    <div class="card empty"><strong>Trends are for admins and budget owners</strong>Your own usage is on the dashboard and in History.</div>
+}
+else if (_data is not null)
+{
+    var periods = _data.Periods;
+    var complete = periods.Where(p => p != Period.Current).ToList();
+    var totals = periods.Select(p => _data.UsedIn(p, _orgId)).ToList();
+    var completeTotals = complete.Select(p => (p, v: _data.UsedIn(p, _orgId))).Where(x => x.v is not null).ToList();
+    var lastMonth = Period.Previous(Period.Current);
+    var lastValue = _data.UsedIn(lastMonth, _orgId);
+    var beforeValue = _data.UsedIn(Period.Previous(lastMonth), _orgId);
+    var busiest = completeTotals.OrderByDescending(x => x.v).FirstOrDefault();
+    var scopeName = _orgId is null ? "the company" : _data.Organizations.First(o => o.Id == _orgId).Name;
+
+    <div class="page-header">
+        <div>
+            <h1>Trends</h1>
+            <p>Credits used each month, @(Session.ShowsOrganizations ? "by organization and by person" : "company-wide and by person"). History is kept for every month that's been synced.</p>
+        </div>
+    </div>
+
+    <div class="filter-row" role="group" aria-label="Filters">
+        <div class="seg" role="radiogroup" aria-label="Time range">
+            @foreach (var m in new[] { 3, 6, 12, 24 })
+            {
+                <button class="@(_months == m ? "active" : "")" role="radio" aria-checked="@(_months == m ? "true" : "false")" @onclick="() => SetMonths(m)">@m months</button>
+            }
+        </div>
+        @if (Session.ShowsOrganizations)
+        {
+        <div class="seg" role="radiogroup" aria-label="Organization">
+            <button class="@(_orgId is null ? "active" : "")" role="radio" aria-checked="@(_orgId is null ? "true" : "false")" @onclick="() => _orgId = null">Company-wide</button>
+            @foreach (var org in _data.Organizations)
+            {
+                <button class="@(_orgId == org.Id ? "active" : "")" role="radio" aria-checked="@(_orgId == org.Id ? "true" : "false")" @onclick="() => _orgId = org.Id">
+                    <i class="key-dot" style="background:@OrgColor(org.Id)"></i>@org.Name
+                </button>
+            }
+        </div>
+        }
+    </div>
+
+    <div class="grid grid-4">
+        <div class="stat">
+            <div class="label">Used in the last @_months months</div>
+            <div class="value">@Session.Amt(totals.Sum(v => v ?? 0))</div>
+            <div class="sub">@Session.UnitLabel in @scopeName</div>
+        </div>
+        <div class="stat">
+            <div class="label">Monthly average</div>
+            <div class="value">@(completeTotals.Count == 0 ? "–" : Session.Amt(Math.Round(completeTotals.Average(x => x.v!.Value))))</div>
+            <div class="sub">over @completeTotals.Count complete @(completeTotals.Count == 1 ? "month" : "months")</div>
+        </div>
+        <div class="stat">
+            <div class="label">@Period.Display(lastMonth)</div>
+            <div class="value">@(lastValue is null ? "–" : Session.Amt(lastValue.Value))</div>
+            <div class="sub">@Change(lastValue, beforeValue, $"vs {Period.Short(Period.Previous(lastMonth))}")</div>
+        </div>
+        <div class="stat">
+            <div class="label">Busiest month</div>
+            <div class="value">@(busiest.v is null ? "–" : Period.Short(busiest.p, withYear: true))</div>
+            <div class="sub">@(busiest.v is null ? "No complete months yet" : $"{Session.WithUnit(busiest.v.Value)}")</div>
+        </div>
+    </div>
+
+    <div class="grid grid-2 mt">
+        <section class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Credits used per month@(_orgId is not null ? $" in {scopeName}" : Session.ShowsOrganizations ? ", by organization" : ", company-wide")</h2>
+                    <p>@Period.Display(periods[0]) to @Period.Display(periods[^1]). This month is still in progress.</p>
+                </div>
+            </div>
+            @if (totals.All(v => v is null))
+            {
+                <div class="empty"><strong>No usage history yet</strong>History fills in as usage syncs from GitHub.</div>
+            }
+            else
+            {
+                <LineChart Labels="AxisLabels" TooltipLabels="TooltipLabels" Series="OrgSeries()" AriaLabel="@($"Credits used per month in {scopeName}")" />
+            }
+        </section>
+        <section class="card">
+            @{
+                var person = _personId is int id && _data.Users.TryGetValue(id, out var u) ? u : null;
+            }
+            @if (person is null)
+            {
+                <div class="empty"><strong>Select a person</strong>Pick someone in the table below to see their monthly usage.</div>
+            }
+            else
+            {
+                var used = periods.Select(p => _data.UsedIn(p, userId: person.Id)).ToList();
+                var budget = periods.Select(p => _data.AllocatedTo(person.Id, p)).ToList();
+                var full = complete.Select(p => _data.UsedIn(p, userId: person.Id)).Where(v => v is not null).Select(v => v!.Value).ToList();
+                var orgNames = _data.UserOrganizations.GetValueOrDefault(person.Id)?
+                    .Select(id => _data.Organizations.FirstOrDefault(o => o.Id == id)?.Name).Where(n => n is not null) ?? [];
+                <div class="card-header">
+                    <div>
+                        <h2><Person User="person" Size="24" ShowLogin="true" /></h2>
+                        <p>@(Session.ShowsOrganizations ? string.Join(", ", orgNames) + " · " : "")all their usage combined</p>
+                    </div>
+                </div>
+                <UsageColumns Labels="AxisLabels" TooltipLabels="TooltipLabels" Used="used" Budget="budget"
+                              AriaLabel="@($"{person.Login}: credits used per month against budget")" />
+                <div class="breakdown">
+                    <span>Average <strong>@(full.Count == 0 ? "–" : Session.Amt(Math.Round(full.Average())))</strong> a month</span>
+                    <span>Most <strong>@(full.Count == 0 ? "–" : Session.Amt(full.Max()))</strong></span>
+                    <span>Over budget in <strong>@periods.Where((p, i) => used[i] is decimal x && budget[i] is decimal b && x > b).Count()</strong> of @periods.Count months</span>
+                </div>
+            }
+        </section>
+    </div>
+
+    <section class="card mt">
+        <div class="card-header">
+            <div>
+                <h2>Usage by person</h2>
+                <p>Credits each person used per month in @scopeName. Select someone to chart their months above.</p>
+            </div>
+            <div class="seg sm" role="radiogroup" aria-label="Sort people">
+                @foreach (var (key, label) in new[] { (Sort.Most, "Most used"), (Sort.Change, "Biggest change"), (Sort.Name, "Name") })
+                {
+                    <button class="@(_sort == key ? "active" : "")" role="radio" aria-checked="@(_sort == key ? "true" : "false")" @onclick="() => _sort = key">@label</button>
+                }
+            </div>
+        </div>
+        @{
+            var rows = PeopleRows();
+            var maxCell = rows.SelectMany(r => r.Values).Where(v => v is not null).Select(v => v!.Value).DefaultIfEmpty(0).Max();
+        }
+        @if (rows.Count == 0)
+        {
+            <div class="empty"><strong>No one to show</strong></div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="heat">
+                    <thead>
+                        <tr>
+                            <th>Person</th>
+                            @foreach (var p in periods) { <th class="num" title="@Period.Display(p)">@AxisLabel(p)</th> }
+                            <th class="num">Total</th>
+                            <th class="num" title="Last month compared with the average of earlier months in the range">Change</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in rows)
+                        {
+                            <tr class="@(r.User.Id == _personId ? "selected" : "")" @onclick="() => _personId = r.User.Id">
+                                <td>
+                                    <button class="link-btn" @onclick="() => _personId = r.User.Id" @onclick:stopPropagation="true">
+                                        <Person User="r.User" Size="22" />
+                                    </button>
+                                </td>
+                                @for (var i = 0; i < periods.Count; i++)
+                                {
+                                    var v = r.Values[i];
+                                    var (bg, fg) = HeatColor(v, maxCell);
+                                    <td class="num cell" style="background:@bg;color:@fg" title="@($"{r.User.Login} · {Period.Display(periods[i])}: {(v is null ? "no data" : Session.Amt(v.Value) + " " + Session.UnitLabel)}")">
+                                        @(v is null ? "–" : Session.Amt(v.Value))
+                                    </td>
+                                }
+                                <td class="num"><strong>@Session.Amt(r.Total)</strong></td>
+                                <td class="num nowrap">@ChangeText(r.Change)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="heat-legend" aria-hidden="true">
+                <span>Fewer</span>
+                @foreach (var (bg, _) in HeatSteps) { <i style="background:@bg"></i> }
+                <span>More (up to @Session.Amt(maxCell))</span>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private enum Sort { Most, Change, Name }
+
+    private record PersonRow(AppUser User, IReadOnlyList<decimal?> Values, decimal Total, double? Change);
+
+    [SupplyParameterFromQuery(Name = "person")] private string? PersonLogin { get; set; }
+
+    private TrendData? _data;
+    private int _months = 12;
+    private int? _orgId;
+    private int? _personId;
+    private Sort _sort = Sort.Most;
+    private bool _appliedQuery;
+
+    // Dark-mode sequential blue, near-surface for few credits to bright for many. Text flips by fill lightness.
+    private static readonly (string Bg, string Fg)[] HeatSteps =
+    [
+        ("#0d366b", "#f0efec"), ("#184f95", "#f0efec"), ("#256abf", "#f0efec"), ("#3987e5", "#111110"), ("#86b6ef", "#111110"),
+    ];
+
+    private List<string> AxisLabels => _data!.Periods.Select(AxisLabel).ToList();
+    private List<string> TooltipLabels => _data!.Periods.Select(p => p == Period.Current ? Period.Display(p) + " (so far)" : Period.Display(p)).ToList();
+
+    private static string AxisLabel(string period)
+    {
+        var (_, month) = Period.Parse(period);
+        return month == 1 ? $"{Period.Short(period)} ’{period[2..4]}" : Period.Short(period);
+    }
+
+    protected override async Task LoadAsync()
+    {
+        if (!Session.SeesCompanyTotals) return;
+        _data = await TrendService.GetAsync(_months);
+        if (!_appliedQuery)
+        {
+            _appliedQuery = true;
+            _personId = _data.Users.Values.FirstOrDefault(u => string.Equals(u.Login, PersonLogin, StringComparison.OrdinalIgnoreCase))?.Id
+                        ?? (_data.Usage.Any(x => x.UserId == Session.User!.Id) ? Session.User!.Id : null);
+        }
+    }
+
+    private async Task SetMonths(int months)
+    {
+        _months = months;
+        await ReloadAsync();
+    }
+
+    /// <summary>Each org keeps the color of its fixed slot, whatever the filter shows.</summary>
+    private string OrgColor(int orgId)
+    {
+        var index = _data!.Organizations.ToList().FindIndex(o => o.Id == orgId);
+        var slots = _data.Organizations.Count <= ChartScale.Categorical.Length ? ChartScale.Categorical.Length : ChartScale.Categorical.Length - 1;
+        return index >= 0 && index < slots ? ChartScale.Categorical[index] : ChartScale.Other;
+    }
+
+    private List<ChartSeries> OrgSeries()
+    {
+        var data = _data!;
+        if (!Session.ShowsOrganizations)
+            return [new ChartSeries("Company-wide", ChartScale.Categorical[0], data.Periods.Select(p => data.UsedIn(p)).ToList())];
+        if (_orgId is int only)
+        {
+            var org = data.Organizations.First(o => o.Id == only);
+            return [new ChartSeries(org.Name, OrgColor(only), data.Periods.Select(p => data.UsedIn(p, only)).ToList())];
+        }
+
+        // Past eight orgs, the rest fold into one "Other" line rather than inventing new colors.
+        var slots = data.Organizations.Count <= ChartScale.Categorical.Length ? data.Organizations.Count : ChartScale.Categorical.Length - 1;
+        var series = data.Organizations.Take(slots)
+            .Select(o => new ChartSeries(o.Name, OrgColor(o.Id), data.Periods.Select(p => data.UsedIn(p, o.Id)).ToList()))
+            .ToList();
+        var rest = data.Organizations.Skip(slots).Select(o => o.Id).ToHashSet();
+        if (rest.Count > 0)
+        {
+            series.Add(new ChartSeries("Other organizations", ChartScale.Other, data.Periods.Select(p =>
+            {
+                var points = data.Usage.Where(u => u.Period == p && rest.Contains(u.OrganizationId)).ToList();
+                return points.Count == 0 ? (decimal?)null : points.Sum(x => x.Used);
+            }).ToList()));
+        }
+        return series;
+    }
+
+    private List<PersonRow> PeopleRows()
+    {
+        var data = _data!;
+        var complete = data.Periods.Where(p => p != Period.Current).ToList();
+        var inScope = data.Users.Values.Where(u => _orgId is null
+            ? data.UserOrganizations.ContainsKey(u.Id) || data.Usage.Any(x => x.UserId == u.Id)
+            : (data.UserOrganizations.GetValueOrDefault(u.Id)?.Contains(_orgId.Value) ?? false)
+              || data.Usage.Any(x => x.UserId == u.Id && x.OrganizationId == _orgId));
+
+        var rows = inScope.Select(u =>
+        {
+            var values = data.Periods.Select(p => data.UsedIn(p, _orgId, u.Id)).ToList();
+            var full = complete.Select(p => data.UsedIn(p, _orgId, u.Id)).ToList();
+            double? change = null;
+            if (full.Count >= 2 && full[^1] is decimal last)
+            {
+                var earlier = full.Take(full.Count - 1).Where(v => v is not null).Select(v => v!.Value).ToList();
+                if (earlier.Count > 0 && earlier.Average() > 0)
+                    change = (double)((last - earlier.Average()) / earlier.Average() * 100);
+            }
+            return new PersonRow(u, values, values.Sum(v => v ?? 0), change);
+        });
+
+        return (_sort switch
+        {
+            Sort.Change => rows.OrderByDescending(r => r.Change ?? double.MinValue),
+            Sort.Name => rows.OrderBy(r => r.User.Login, StringComparer.OrdinalIgnoreCase),
+            _ => rows.OrderByDescending(r => r.Total),
+        }).ToList();
+    }
+
+    private static (string Bg, string Fg) HeatColor(decimal? value, decimal max)
+    {
+        if (value is null) return ("transparent", "var(--text-muted)");
+        if (value <= 0 || max <= 0) return ("var(--surface-2)", "var(--text-muted)");
+        var step = (int)Math.Min(HeatSteps.Length - 1, Math.Floor((double)(value.Value / max) * HeatSteps.Length));
+        return HeatSteps[step];
+    }
+
+    private static string Change(decimal? now, decimal? before, string suffix)
+    {
+        if (now is null || before is null || before == 0) return "No earlier month to compare";
+        var pct = (double)((now.Value - before.Value) / before.Value * 100);
+        return $"{(pct >= 0 ? "▲" : "▼")} {Math.Abs(Math.Round(pct)):0}% {suffix}";
+    }
+
+    private static string ChangeText(double? pct) =>
+        pct is null ? "–" : $"{(pct >= 0 ? "▲" : "▼")} {Math.Abs(Math.Round(pct.Value)):0}%";
+}

@@ -1,0 +1,258 @@
+@page "/admin/integration"
+@using Microsoft.EntityFrameworkCore
+@inject CredentialService Credentials
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Integration · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.CanManageIntegration && !Session.CanViewAudit)
+{
+    <div class="card empty"><strong>Integration admins, admins and auditors only</strong></div>
+}
+else
+{
+    var gh = Credentials.GitHub;
+    <div class="page-header">
+        <div>
+            <h1>Integration</h1>
+            <p>How the app connects to GitHub and Microsoft, and every call it makes. Secret values are never shown or stored in the app's database.</p>
+        </div>
+        <a class="btn ghost sm" href="admin">Back to admin</a>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <div class="grid grid-2 mb">
+        <section class="card">
+            <div class="card-header">
+                <div>
+                    <h2>GitHub</h2>
+                    <p>@(Credentials.Mode switch { "app" => "Connected as a GitHub App", "token" => "Connected with a personal access token", _ => "Not connected" })</p>
+                </div>
+                <span class="badge @(Credentials.Mode == "app" ? "good" : Credentials.Mode == "token" ? "warning" : "critical") dot">
+                    @(Credentials.Mode switch { "app" => "GitHub App", "token" => "Token", _ => "None" })
+                </span>
+            </div>
+            <dl class="kv">
+                <dt>GitHub App ID</dt><dd>@(gh.AppId ?? "–")</dd>
+                <dt>App private key</dt><dd>@(string.IsNullOrWhiteSpace(gh.AppPrivateKey) ? "Not set" : "Set")</dd>
+                <dt>Personal token</dt><dd>@(gh.HasToken ? (gh.HasApp ? "Set, but not used (the GitHub App is)" : "Set") : "Not set")</dd>
+                <dt>Enterprise</dt><dd>@(gh.EnterpriseSlug is { Length: > 0 } e ? e : "Not set (needed for user budgets and cost centers)")</dd>
+                <dt>User budgets</dt><dd>@Credentials.BudgetStore.Description</dd>
+            </dl>
+            @if (Credentials.Mode == "token")
+            {
+                <div class="alert warning mt small"><span class="icon"><Icon Name="info" /></span>
+                    <span>A personal token belongs to one person: it stops working if they leave or lose access, and it can't be limited to this app.
+                        Switch to a GitHub App (see below).</span></div>
+            }
+            @if (_installations.Count > 0)
+            {
+                <h3 class="mt">Installed on</h3>
+                <ul class="plain-list small">
+                    @foreach (var i in _installations)
+                    {
+                        <li><strong>@i.Account</strong> <span class="muted">(@i.AccountType)</span>
+                            @(i.TokenExpiresUtc is { } exp ? $" · token valid until {exp:HH:mm} UTC" : "")</li>
+                    }
+                </ul>
+            }
+            else if (_installError is not null)
+            {
+                <div class="alert critical mt small"><span class="icon"><Icon Name="alert" /></span><span>@_installError</span></div>
+            }
+        </section>
+
+        <section class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Microsoft</h2>
+                    <p>Sign-in and the account check</p>
+                </div>
+            </div>
+            <dl class="kv">
+                <dt>Entra sign-in</dt><dd>@(Credentials.EntraConfigured ? "Configured" : "Not configured (demo sign-in only)")</dd>
+                <dt>Account check</dt><dd>@Credentials.Directory.Description</dd>
+                <dt>Key Vault</dt><dd>@(Credentials.KeyVaultUri ?? "Not configured: credentials come from app settings")</dd>
+            </dl>
+            @if (Session.CanManageIntegration)
+            {
+                <button class="btn mt" disabled="@_busy" @onclick="Test">
+                    @if (_busy) { <span class="spinner"></span> } else { <Icon Name="sync" Size="15" /> }
+                    Test connections
+                </button>
+            }
+            @if (_checks is not null)
+            {
+                <ul class="check-list mt">
+                    @foreach (var c in _checks)
+                    {
+                        <li class="@(c.Ok ? "ok" : "bad")">
+                            <span class="badge @(c.Ok ? "good" : "critical") dot">@(c.Ok ? "OK" : "Failed")</span>
+                            <strong>@c.Name</strong>
+                            <div class="muted small">@c.Detail</div>
+                        </li>
+                    }
+                </ul>
+            }
+        </section>
+    </div>
+
+    @if (Session.CanManageIntegration)
+    {
+        <section class="card mb">
+            <div class="card-header">
+                <div>
+                    <h2>Rotate a credential</h2>
+                    <p>Writes the new value to Key Vault and reloads settings straight away. The value is never shown again or logged.</p>
+                </div>
+            </div>
+            @if (Credentials.KeyVaultUri is null)
+            {
+                <p class="muted small">Key Vault isn't configured, so credentials are managed in app settings (or user secrets locally).
+                    Set <code>KeyVault:Uri</code> and give the app's identity <em>Key Vault Secrets Officer</em> to manage them here.</p>
+            }
+            else
+            {
+                <form class="row" @onsubmit="Rotate">
+                    <select @bind="_secretName" aria-label="Credential">
+                        @foreach (var (name, label) in CredentialService.RotatableSecrets) { <option value="@name">@label</option> }
+                    </select>
+                    @if (_secretName == "GitHub--AppPrivateKey")
+                    {
+                        <textarea @bind="_secretValue" rows="3" placeholder="-----BEGIN RSA PRIVATE KEY-----" style="flex:1;min-width:260px" aria-label="New value" autocomplete="off"></textarea>
+                    }
+                    else
+                    {
+                        <input type="password" @bind="_secretValue" style="flex:1;min-width:220px" aria-label="New value" autocomplete="off" />
+                    }
+                    <button class="btn primary" type="submit" disabled="@_busy">Save to Key Vault</button>
+                </form>
+            }
+            <details class="mt small">
+                <summary>Setting up a GitHub App</summary>
+                <ol class="secondary">
+                    <li>In your enterprise or organization: Settings → Developer settings → GitHub Apps → New GitHub App. No webhook or callback is needed.</li>
+                    <li>Organization permissions: <em>GitHub Copilot Business</em> read, <em>Members</em> read, <em>Administration</em> read (usage).
+                        For user budgets and cost centers, install it on the enterprise with <em>Enterprise administration</em> (billing) write.</li>
+                    <li>Generate a private key, and note the App ID.</li>
+                    <li>Install the app on each organization (and the enterprise).</li>
+                    <li>Save the App ID and private key here (or as <code>GitHub--AppId</code> and <code>GitHub--AppPrivateKey</code> in Key Vault), then remove the old personal token.</li>
+                </ol>
+            </details>
+        </section>
+    }
+
+    <section class="card">
+        <div class="card-header">
+            <div>
+                <h2>API call log</h2>
+                <p>Every call to GitHub and Microsoft Graph, kept for @_retention days. @(_rateLimit is null ? "" : $"GitHub calls left this hour: {_rateLimit:#,0}.")</p>
+            </div>
+            <div class="seg sm" role="group" aria-label="Show">
+                <button type="button" class="@(!_failedOnly ? "active" : "")" @onclick="() => SetFailed(false)">All</button>
+                <button type="button" class="@(_failedOnly ? "active" : "")" @onclick="() => SetFailed(true)">Failed (@_failedCount in 24h)</button>
+            </div>
+        </div>
+        @if (_calls.Count == 0)
+        {
+            <div class="empty small"><strong>No calls yet</strong>@(_failedOnly ? "Nothing has failed." : "Calls show up here once the app talks to GitHub or Microsoft.")</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>When</th><th>Service</th><th>Call</th><th class="num">Status</th><th class="num">Time</th><th class="num">Rate left</th><th>Error</th></tr></thead>
+                    <tbody>
+                        @foreach (var c in _calls)
+                        {
+                            <tr>
+                                <td class="secondary small nowrap" title="@Format.Timestamp(c.CreatedUtc)">@Format.Relative(c.CreatedUtc)</td>
+                                <td>@c.Service</td>
+                                <td class="mono small" style="max-width:420px;overflow-wrap:anywhere">@c.Method @c.Path</td>
+                                <td class="num"><span class="badge @(c.Succeeded ? "good" : "critical")">@(c.Status == 0 ? "no reply" : c.Status.ToString())</span></td>
+                                <td class="num small">@c.DurationMs ms</td>
+                                <td class="num small">@(c.RateLimitRemaining?.ToString("#,0") ?? "–")</td>
+                                <td class="small secondary" style="max-width:300px;overflow-wrap:anywhere">@c.Error</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private List<GitHubInstallation> _installations = [];
+    private string? _installError;
+    private List<ConnectionCheck>? _checks;
+    private List<ApiCall> _calls = [];
+    private int? _rateLimit;
+    private int _failedCount;
+    private bool _failedOnly;
+    private bool _busy;
+    private int _retention = 30;
+    private string _secretName = "GitHub--AppPrivateKey";
+    private string _secretValue = "";
+    private bool _loadedInstallations;
+
+    [Inject] private IConfiguration Configuration { get; set; } = default!;
+
+    protected override async Task LoadAsync()
+    {
+        _retention = Math.Max(1, Configuration.GetValue("App:ApiLogRetentionDays", 30));
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var query = db.ApiCalls.AsNoTracking().AsQueryable();
+        if (_failedOnly) query = query.Where(c => c.Status < 200 || c.Status >= 300);
+        _calls = await query.OrderByDescending(c => c.Id).Take(200).ToListAsync();
+        var since = DateTime.UtcNow.AddDays(-1);
+        _failedCount = await db.ApiCalls.CountAsync(c => c.CreatedUtc >= since && (c.Status < 200 || c.Status >= 300));
+        _rateLimit = await db.ApiCalls.Where(c => c.Service == "GitHub" && c.RateLimitRemaining != null)
+            .OrderByDescending(c => c.Id).Select(c => c.RateLimitRemaining).FirstOrDefaultAsync();
+
+        if (!_loadedInstallations && Credentials.Mode == "app")
+        {
+            _loadedInstallations = true;
+            try { _installations = await Credentials.GetInstallationsAsync(); }
+            catch (Exception ex) when (ex is GitHubApiException or HttpRequestException or System.Security.Cryptography.CryptographicException or ArgumentException)
+            {
+                _installError = "Couldn't list the GitHub App's installations: " + ex.Message;
+            }
+        }
+    }
+
+    private async Task SetFailed(bool failed)
+    {
+        _failedOnly = failed;
+        await ReloadAsync();
+    }
+
+    private async Task Test()
+    {
+        _busy = true;
+        try
+        {
+            _checks = await Credentials.TestAsync(Session.User!.Id);
+            await ReloadAsync();
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task Rotate()
+    {
+        _busy = true;
+        try
+        {
+            var result = await Credentials.SetSecretAsync(Session.User!.Id, _secretName, _secretValue);
+            _secretValue = "";
+            _loadedInstallations = false;
+            await ShowAsync(result);
+        }
+        finally { _busy = false; }
+    }
+}

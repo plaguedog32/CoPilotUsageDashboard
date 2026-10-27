@@ -1,0 +1,88 @@
+@page "/admin/alerts"
+@inject AlertService Alerts
+
+<PageTitle>Alerts · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.CanSeeAlerts)
+{
+    <div class="card empty"><strong>Admins, integration admins and auditors only</strong></div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Alerts</h1>
+            <p>Failed sign-ins, organizations that haven't synced or only partly synced, and GitHub budget writes that failed or need reconciling.
+                Alerts close themselves when the problem clears. New ones go to admins and integration admins (through the email hook) and to Application Insights.</p>
+        </div>
+        <div class="seg sm" role="group" aria-label="Show">
+            <button type="button" class="@(!_all ? "active" : "")" @onclick="() => Show(false)">Open</button>
+            <button type="button" class="@(_all ? "active" : "")" @onclick="() => Show(true)">All</button>
+        </div>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    @if (_alerts.Count == 0)
+    {
+        <div class="card empty"><Icon Name="check" Size="28" /><strong>All clear</strong>Nothing needs attention.</div>
+    }
+    @foreach (var a in _alerts)
+    {
+        <article class="alert-item @(a.Severity == AlertSeverity.Critical ? "critical" : "warning") @(a.IsOpen ? "" : "closed")">
+            <span class="icon"><Icon Name="alert" /></span>
+            <div class="alert-body">
+                <div class="row" style="gap:8px">
+                    <strong>@a.Title</strong>
+                    <span class="badge neutral">@a.Kind</span>
+                    @if (!a.IsOpen) { <span class="badge good">Resolved @Format.Relative(a.ResolvedUtc)</span> }
+                    else if (a.AcknowledgedUtc is not null) { <span class="badge neutral">Seen by @(a.AcknowledgedBy?.Login ?? "someone")</span> }
+                </div>
+                @if (!string.IsNullOrEmpty(a.Detail)) { <div class="secondary small">@a.Detail</div> }
+                <div class="muted small">
+                    @(a.Count == 1 ? "Once" : $"{a.Count} times") · first @Format.Relative(a.FirstSeenUtc) · last @Format.Relative(a.LastSeenUtc)
+                    @Link(a)
+                </div>
+            </div>
+            @if (a.IsOpen && Session.CanManageIntegration)
+            {
+                <div class="row nowrap" style="gap:6px">
+                    @if (a.AcknowledgedUtc is null)
+                    {
+                        <button class="btn sm" @onclick="() => Ack(a, false)">Acknowledge</button>
+                    }
+                    <button class="btn ghost sm" @onclick="() => Ack(a, true)">Close</button>
+                </div>
+            }
+        </article>
+    }
+}
+
+@code {
+    private List<Alert> _alerts = [];
+    private bool _all;
+
+    protected override async Task LoadAsync() => _alerts = await Alerts.GetAsync(_all);
+
+    private async Task Show(bool all)
+    {
+        _all = all;
+        await ReloadAsync();
+    }
+
+    private async Task Ack(Alert a, bool close) => await ShowAsync(await Alerts.AcknowledgeAsync(Session.User!.Id, a.Id, close));
+
+    private static RenderFragment Link(Alert a) => a.Kind switch
+    {
+        "sync" => @<text> · <a href="admin">Organizations</a></text>,
+        "write-back" => @<text> · <a href="admin/github">GitHub sync</a></text>,
+        "directory" => @<text> · <a href="admin/people">People &amp; access</a></text>,
+        "expiry" when a.Key.StartsWith("departed-credits") => @<text> · <a href="admin/people">Reassign on People &amp; access</a></text>,
+        "expiry" => @<text> · <a href="members">Move credits on Members</a></text>,
+        _ => @<text> · <a href="admin/integration">API call log</a></text>,
+    };
+}

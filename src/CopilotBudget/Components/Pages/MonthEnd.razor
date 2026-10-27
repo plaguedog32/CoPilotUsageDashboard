@@ -1,0 +1,228 @@
+@page "/reports/month-end"
+@inject MonthEndService Closing
+@inject IEmailSender Email
+@inject IJSRuntime JS
+@inject AuditLog Audit
+@inject Notifications Notifications
+
+<PageTitle>Month-end close · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.IsAppAdmin && !Session.CanSeeEveryone)
+{
+    <div class="card empty"><strong>Admins, budget visibility and auditors only</strong></div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Month-end close</h1>
+            <p>What each person had, used and let expire. Monthly credits don't carry over, so anything unused is lost at the reset.
+                It's emailed to admins automatically, with the CSV attached, when each month ends.</p>
+        </div>
+        <div class="row">
+            <select @bind="_period" @bind:after="ReloadAsync" aria-label="Month">
+                @foreach (var p in Enumerable.Reverse(Period.LastMonths(12)))
+                {
+                    <option value="@p">@Period.Display(p)@(p == Period.Current ? " (so far)" : "")</option>
+                }
+            </select>
+            <button class="btn" disabled="@(_report is null)" @onclick="Export"><Icon Name="history" Size="15" /> Export CSV</button>
+        </div>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <section class="card mb">
+        <div class="card-header">
+            <div>
+                <h2>Who gets the month-end email</h2>
+                <p>Sent automatically when each month ends (next: @Pace.NextResetUtc().ToString("d MMM yyyy")), with the CSV attached.
+                    @(_recipients.Count == 0 ? "Right now nobody would get it." : $"Right now it goes to {_recipients.Count} {(_recipients.Count == 1 ? "person" : "people")}.")</p>
+            </div>
+        </div>
+        @if (Session.IsAppAdmin)
+        {
+            <label class="switch">
+                <input type="checkbox" checked="@_toAdmins" @onchange="e => _toAdmins = (bool)e.Value!" />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-label">All admins@(_adminEmails.Count == 0 ? "" : $" ({string.Join(", ", _adminEmails)})")</span>
+            </label>
+
+            <div class="field mt">
+                <label for="extra-recipient">Also send it to</label>
+                <div class="recipient-chips">
+                    @foreach (var e in _extra)
+                    {
+                        <span class="recipient-chip">@e
+                            <button type="button" aria-label="@($"Remove {e}")" title="Remove" @onclick="() => _extra.Remove(e)"><Icon Name="x" Size="12" /></button>
+                        </span>
+                    }
+                    @if (_extra.Count == 0) { <span class="muted small">Nobody else yet.</span> }
+                </div>
+                <form class="row mt-sm" @onsubmit="AddRecipient">
+                    <input id="extra-recipient" list="people-emails" autocomplete="off" placeholder="Name or email, e.g. finance@contoso.com" @bind="_newRecipient" @bind:event="oninput" style="flex:1;min-width:240px" />
+                    <datalist id="people-emails">
+                        @foreach (var p in _people.Where(p => p.Email is not null && !p.IsDisabled)) { <option value="@p.Email">@p.DisplayName</option> }
+                    </datalist>
+                    <button class="btn sm" type="submit" disabled="@string.IsNullOrWhiteSpace(_newRecipient)"><Icon Name="plus" Size="14" /> Add</button>
+                </form>
+                <div class="hint">Anyone in the company, or a shared mailbox. They don't need access to this site.</div>
+            </div>
+            <button class="btn primary sm" disabled="@(!RecipientsChanged)" @onclick="SaveRecipients">Save recipients</button>
+        }
+        else
+        {
+            <p class="small secondary">@(_recipients.Count == 0 ? "Nobody." : string.Join(", ", _recipients))</p>
+        }
+    </section>
+
+    @if (!Email.IsConfigured)
+    {
+        <div class="alert warning mb"><span class="icon"><Icon Name="info" /></span>
+            <span>Sending email isn't implemented yet. The automatic month-end email goes through the email hook, which only logs it for now.</span></div>
+    }
+
+    @if (_report is { } r)
+    {
+        @if (!r.IsFinal)
+        {
+            <div class="alert mb"><span class="icon"><Icon Name="info" /></span><span>This month isn't over, so "expired" is what's unused so far.</span></div>
+        }
+        <div class="grid grid-4 mb">
+            <div class="stat">
+                <div class="label">Total budget</div>
+                <div class="value">@Session.Amt(r.Allocated)</div>
+                <div class="sub">@Format.Dollars(r.Allocated * Session.DollarsPerCredit) · @r.Rows.Count people</div>
+            </div>
+            <div class="stat">
+                <div class="label">Used</div>
+                <div class="value">@Session.Amt(r.Used)</div>
+                <div class="sub">@Format.Percent(r.UsedPercent) · @Format.Dollars(r.Used * Session.DollarsPerCredit)</div>
+            </div>
+            <div class="stat">
+                <div class="label">@(r.IsFinal ? "Expired unused" : "Unused so far")</div>
+                <div class="value">@Session.Amt(r.Expired)</div>
+                <div class="sub">@Format.Percent(r.ExpiredPercent) · @Format.Dollars(r.Expired * Session.DollarsPerCredit)</div>
+            </div>
+            <div class="stat">
+                <div class="label">Moved between people</div>
+                <div class="value">@Session.Amt(r.Moved)</div>
+                <div class="sub">@r.Rows.Count(x => x.Over > 0) over budget · @Session.WithUnit(r.PoolCreditsLeft) still in pools (don't expire)</div>
+            </div>
+        </div>
+
+        <section class="card">
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Person</th><th class="num">Monthly budget</th><th class="num">Received</th><th class="num">Sent</th>
+                            <th class="num">Adjustments</th><th class="num">From pools</th><th class="num">Total</th><th class="num">Used</th>
+                            <th class="num">@(r.IsFinal ? "Expired" : "Unused")</th><th class="num">Over</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var x in r.Rows)
+                        {
+                            <tr>
+                                <td><Person User="x.User" Size="22" ShowLogin="true" /></td>
+                                <td class="num">@Session.Amt(x.MonthlyBudget)</td>
+                                <td class="num">@Z(x.Received)</td>
+                                <td class="num">@Z(x.Sent)</td>
+                                <td class="num">@(x.Adjustments == 0 ? "–" : Session.Signed(x.Adjustments))</td>
+                                <td class="num">@Z(x.FromPools)</td>
+                                <td class="num"><strong>@Session.Amt(x.Allocated)</strong></td>
+                                <td class="num">@Session.Amt(x.Used)</td>
+                                <td class="num @(x.Expired > 0 ? "amount-out" : "")">@Z(x.Expired)</td>
+                                <td class="num @(x.Over > 0 ? "amount-out" : "")">@Z(x.Over)</td>
+                            </tr>
+                        }
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <th>Total</th>
+                            <th class="num">@Session.Amt(r.Rows.Sum(x => x.MonthlyBudget))</th>
+                            <th class="num">@Session.Amt(r.Rows.Sum(x => x.Received))</th>
+                            <th class="num">@Session.Amt(r.Rows.Sum(x => x.Sent))</th>
+                            <th class="num">@Session.Signed(r.Rows.Sum(x => x.Adjustments))</th>
+                            <th class="num">@Session.Amt(r.Rows.Sum(x => x.FromPools))</th>
+                            <th class="num">@Session.Amt(r.Allocated)</th>
+                            <th class="num">@Session.Amt(r.Used)</th>
+                            <th class="num">@Session.Amt(r.Expired)</th>
+                            <th class="num">@Session.Amt(r.Over)</th>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </section>
+    }
+}
+
+@code {
+    private string _period = Period.Previous(Period.Current);
+    private CloseReport? _report;
+
+    private List<string> _recipients = [];
+    private List<string> _adminEmails = [];
+    private List<string> _extra = [];
+    private List<string> _savedExtra = [];
+    private bool _toAdmins = true;
+    private bool _savedToAdmins = true;
+    private string _newRecipient = "";
+    private List<AppUser> _people = [];
+    private bool _recipientsLoaded;
+
+    private bool RecipientsChanged => _toAdmins != _savedToAdmins || !_extra.SequenceEqual(_savedExtra);
+
+    protected override async Task LoadAsync()
+    {
+        if (!Session.IsAppAdmin && !Session.CanSeeEveryone) return;
+        _report = await Closing.BuildAsync(_period);
+        _recipients = await Closing.RecipientsAsync();
+        _adminEmails = (await Notifications.AdminEmailsAsync()).Where(e => e is not null).Select(e => e!).Order().ToList();
+        if (!_recipientsLoaded)
+        {
+            _recipientsLoaded = true;
+            var settings = await Budgets.GetSettingsAsync();
+            _savedToAdmins = _toAdmins = settings.MonthEndToAdmins;
+            _savedExtra = MonthEndService.ParseRecipients(settings.MonthEndRecipients);
+            _extra = [.. _savedExtra];
+            if (Session.IsAppAdmin) _people = await Budgets.GetPeopleAsync();
+        }
+    }
+
+    private void AddRecipient()
+    {
+        var value = _newRecipient.Trim().ToLowerInvariant();
+        // Typing a person's name picks their work email.
+        var person = _people.FirstOrDefault(p => p.Email is not null &&
+            (string.Equals(p.DisplayName, _newRecipient.Trim(), StringComparison.OrdinalIgnoreCase) || string.Equals(p.Login, value, StringComparison.OrdinalIgnoreCase)));
+        if (person?.Email is { } email) value = email;
+        if (value.Length > 0 && !_extra.Contains(value)) _extra.Add(value);
+        _newRecipient = "";
+    }
+
+    private async Task SaveRecipients()
+    {
+        var result = await Closing.SetRecipientsAsync(Session.User!.Id, _toAdmins, _extra);
+        if (result.Ok)
+        {
+            _savedToAdmins = _toAdmins;
+            _savedExtra = [.. _extra];
+        }
+        await ShowAsync(result);
+    }
+
+    private string Z(decimal v) => v == 0 ? "–" : Session.Amt(v);
+
+    private async Task Export()
+    {
+        if (_report is null) return;
+        await Audit.RecordAsync(Session.User!.Id, "report.month-end-export", $"Exported the month-end close for {Period.Display(_report.Period)}");
+        await JS.InvokeVoidAsync("copilotBudget.download", $"copilot-credits-{_report.Period}.csv", "text/csv", Closing.ToCsv(_report));
+    }
+}

@@ -1,0 +1,25 @@
+﻿@page "/Error"
+@layout AuthLayout
+@using System.Diagnostics
+
+<PageTitle>Error · Copilot Budget</PageTitle>
+
+<div class="card auth-card">
+    <h1>Something went wrong</h1>
+    <p class="secondary mt">An error occurred while processing your request.</p>
+    @if (!string.IsNullOrEmpty(RequestId))
+    {
+        <p class="muted small mt">Request ID: <code>@RequestId</code></p>
+    }
+    <a class="btn primary mt" href="/">Back to dashboard</a>
+</div>
+
+@code {
+    [CascadingParameter]
+    private HttpContext? HttpContext { get; set; }
+
+    private string? RequestId { get; set; }
+
+    protected override void OnInitialized() =>
+        RequestId = Activity.Current?.Id ?? HttpContext?.TraceIdentifier;
+}

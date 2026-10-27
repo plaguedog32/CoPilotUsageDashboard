@@ -1,0 +1,17 @@
+@inject UserSession Session
+
+<div class="card empty">
+    <Icon Name="users" Size="36" />
+    <strong>You don't have a Copilot seat yet</strong>
+    @if (Session.IsAppAdmin)
+    {
+        <p>Add a GitHub organization on the <a href="admin">Admin</a> page to get started.</p>
+    }
+    else
+    {
+        <p>
+            This fills in once you're given a Copilot seat.
+            You're signed in as <strong>@Session.User?.Login</strong>.
+        </p>
+    }
+</div>

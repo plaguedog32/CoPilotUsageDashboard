@@ -1,0 +1,77 @@
+@* What a budget change does to total spend, shown before it's applied. *@
+@inject UserSession Session
+
+<div class="spend-preview" aria-live="polite">
+    <div class="label">Preview</div>
+    @if (Problem is not null)
+    {
+        <div class="muted small">@Problem</div>
+    }
+    else if (Preview is null)
+    {
+        <div class="muted small">Working it out…</div>
+    }
+    else
+    {
+        var p = Preview;
+        <div class="spend-rows">
+            <div>
+                <span>Total budget this month</span>
+                <span>
+                    @Session.Amt(p.ThisMonthBefore) <span class="arrow" aria-hidden="true">→</span>
+                    <strong>@Session.Amt(p.ThisMonthAfter)</strong>
+                    <span class="@(p.ThisMonthChange > 0 ? "amount-out" : p.ThisMonthChange < 0 ? "amount-in" : "muted")">@Session.Signed(p.ThisMonthChange)</span>
+                </span>
+            </div>
+            @if (p.MonthlyChange != 0)
+            {
+                <div>
+                    <span>Every month after</span>
+                    <span class="@(p.MonthlyChange > 0 ? "amount-out" : "amount-in")">@Session.Signed(p.MonthlyChange) a month</span>
+                </div>
+            }
+            @if (p.ExceptionMonths > 0)
+            {
+                <div>
+                    <span>Over the whole exception</span>
+                    <span>@Session.Signed(p.ExceptionAmount) × @p.ExceptionMonths @(p.ExceptionMonths == 1 ? "month" : "months") = <strong>@Session.Signed(p.ExceptionTotal)</strong></span>
+                </div>
+            }
+            <div>
+                <span>In dollars this month</span>
+                <span>@Format.SignedDollars(p.ThisMonthChange * Session.DollarsPerCredit)</span>
+            </div>
+            @if (p.People.Count > 0)
+            {
+                <div>
+                    <span>People affected</span>
+                    <span>@p.People.Count</span>
+                </div>
+                <ul class="spend-people">
+                    @foreach (var d in p.People.Take(6))
+                    {
+                        <li><Who User="d.User" /><span>@Session.Amt(d.Before) → <strong>@Session.Amt(d.After)</strong></span></li>
+                    }
+                    @if (p.People.Count > 6) { <li class="muted">and @(p.People.Count - 6) more</li> }
+                </ul>
+            }
+        </div>
+        @if (p.NeedsBudgetAuthority)
+        {
+            <div class="alert warning mt small"><span class="icon"><Icon Name="info" /></span>
+                <span>This raises total spend, so a budget authority has to approve it. Nothing changes until then.</span></div>
+        }
+        else if (p.RaisesSpend)
+        {
+            <div class="muted small mt">You're a budget authority (or approval is off), so this applies straight away.</div>
+        }
+    }
+</div>
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    [Parameter] public SpendPreview? Preview { get; set; }
+    [Parameter] public string? Problem { get; set; }
+}

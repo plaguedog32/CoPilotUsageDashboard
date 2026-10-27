@@ -1,0 +1,39 @@
+@inject UserSession Session
+@* Full-width slider for picking an amount from 0 up to what's available. Two-way bound with the number field. *@
+@{
+    var max = Math.Max(0, Math.Floor(Max));
+    var value = Math.Clamp(Value, 0, max == 0 ? 0 : max);
+    var pct = max <= 0 ? 0 : (double)(value / max * 100);
+}
+<div class="amount-slider">
+    <input type="range" min="0" max="@max" step="1" value="@value" disabled="@(max <= 0)"
+           aria-label="@Label" aria-valuetext="@($"{Session.Amt(value)} of {Session.Amt(max)}")"
+           style="--pct:@pct.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"
+           @oninput="OnInput" />
+    <div class="amount-slider-scale" aria-hidden="true">
+        <span>0</span>
+        <span>@Session.Amt(max) @(MaxLabel ?? "(all)")</span>
+    </div>
+</div>
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    [Parameter] public decimal Value { get; set; }
+    [Parameter] public EventCallback<decimal> ValueChanged { get; set; }
+
+    /// <summary>Most the slider allows, usually what the sender can send.</summary>
+    [Parameter] public decimal Max { get; set; }
+
+    [Parameter] public string Label { get; set; } = "Amount";
+
+    /// <summary>Text after the top of the scale. Defaults to "(all)".</summary>
+    [Parameter] public string? MaxLabel { get; set; }
+
+    private Task OnInput(ChangeEventArgs e) =>
+        decimal.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Number,
+            System.Globalization.CultureInfo.InvariantCulture, out var v)
+            ? ValueChanged.InvokeAsync(v)
+            : Task.CompletedTask;
+}

@@ -1,0 +1,185 @@
+@page "/account/login"
+@layout AuthLayout
+@attribute [AllowAnonymous]
+@attribute [ExcludeFromInteractiveRouting]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Authentication
+@using Microsoft.AspNetCore.Authentication.Cookies
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.Options
+@inject IOptions<AppOptions> AppOptions
+@inject IConfiguration Configuration
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Navigation
+@inject IdentityLinkService Identities
+
+<PageTitle>Sign in · Copilot Budget</PageTitle>
+
+<div class="card auth-card">
+    <div class="brand">
+        <img src="icon.svg" alt="" />
+        <span>Copilot Budget</span>
+    </div>
+    <p class="secondary" style="text-align:center">
+        Track GitHub Copilot usage across your organizations and share unused budget with teammates.
+    </p>
+
+    @if (_error is not null)
+    {
+        <div class="alert critical mt" role="alert"><span class="icon"><Icon Name="alert" /></span><span>@_error</span></div>
+    }
+
+    @if (EntraConfigured)
+    {
+        <a class="btn primary block mt" href="account/microsoft-login?returnUrl=@Uri.EscapeDataString(SafeReturn)">
+            <Icon Name="microsoft" /> Sign in with Microsoft
+        </a>
+        <p class="muted small mt" style="text-align:center">Use your work account. It's matched to your GitHub user by email.</p>
+    }
+    else if (!AppOptions.Value.EnableDemoLogin)
+    {
+        <div class="alert warning mt">
+            <span class="icon"><Icon Name="alert" /></span>
+            <span>Microsoft sign-in isn't configured. Set <code>AzureAd:TenantId</code>, <code>AzureAd:ClientId</code> and <code>AzureAd:ClientSecret</code>.</span>
+        </div>
+    }
+
+    @if (AppOptions.Value.EnableDemoLogin)
+    {
+        <div class="divider">demo mode · sign in as</div>
+        @if (_demoUsers.Count == 0)
+        {
+            <p class="muted small">No users in the database yet. Turn on <code>App:SeedDemoData</code> to create some.</p>
+        }
+        else
+        {
+            <form method="post" @formname="demo-login" @onsubmit="SignInAsDemoUser">
+                <AntiforgeryToken />
+                <input type="hidden" name="ReturnUrl" value="@SafeReturn" />
+                <div class="demo-users">
+                    @foreach (var user in _demoUsers)
+                    {
+                        <button class="btn" type="submit" name="DemoLogin" value="@user.Login">
+                            <Avatar User="user" Size="22" />
+                            <span>@user.Login</span>
+                            @{ var roles = user.Roles | (AppOptions.Value.IsAdmin(user.Login) || AppOptions.Value.IsAdmin(user.Email) ? AppRole.Admin : AppRole.None); }
+                            @if (user.IsDisabled)
+                            {
+                                <span class="badge neutral" style="margin-left:auto">left</span>
+                            }
+                            else if (roles != AppRole.None)
+                            {
+                                <span class="badge accent" style="margin-left:auto">@BudgetService.RoleNames(roles)</span>
+                            }
+                        </button>
+                    }
+                </div>
+            </form>
+        }
+
+        <div class="divider">or simulate a Microsoft sign-in</div>
+        <form method="post" @formname="demo-entra" @onsubmit="SignInAsDemoEntra" class="row">
+            <AntiforgeryToken />
+            <input type="hidden" name="ReturnUrl" value="@SafeReturn" />
+            <input type="email" name="DemoEmail" placeholder="work email, e.g. ada@contoso.com" style="flex:1" aria-label="Work email" required />
+            <input name="DemoRoles" placeholder="Entra app roles, comma-separated (optional)" style="flex-basis:100%" aria-label="Entra app roles" />
+            <button class="btn" type="submit"><Icon Name="microsoft" /> Sign in</button>
+        </form>
+        <p class="muted small">Runs the same email matching and role mapping as a real Microsoft sign-in, e.g. roles
+            <code>CopilotBudget.Auditor</code>. Unknown emails get a placeholder an admin can link.</p>
+        <p class="muted small mt">Demo sign-in skips Microsoft sign-in entirely. Turn off <code>App:EnableDemoLogin</code> in production.</p>
+    }
+</div>
+
+@code {
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
+
+    [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
+
+    [SupplyParameterFromForm(FormName = "demo-login")] private string? DemoLogin { get; set; }
+
+    [SupplyParameterFromForm(FormName = "demo-login", Name = "ReturnUrl")] private string? PostedReturnUrl { get; set; }
+
+    [SupplyParameterFromForm(FormName = "demo-entra")] private string? DemoEmail { get; set; }
+
+    [SupplyParameterFromForm(FormName = "demo-entra", Name = "ReturnUrl")] private string? PostedEntraReturnUrl { get; set; }
+
+    [SupplyParameterFromForm(FormName = "demo-entra")] private string? DemoRoles { get; set; }
+
+    [SupplyParameterFromQuery(Name = "error")] private string? ErrorCode { get; set; }
+
+    private List<AppUser> _demoUsers = [];
+    private string? _error;
+
+    private bool EntraConfigured => !string.IsNullOrWhiteSpace(Configuration["AzureAd:ClientId"]) && !string.IsNullOrWhiteSpace(Configuration["AzureAd:TenantId"]);
+
+    private string SafeReturn => UrlHelpers.SafeReturnUrl(PostedReturnUrl ?? PostedEntraReturnUrl ?? ReturnUrl);
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (ErrorCode == "signin") _error = "Sign-in didn't work. If your account has been disabled or you've left, ask an admin.";
+        if (!AppOptions.Value.EnableDemoLogin) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        // The demo's named characters (created first) cover every role; the generated crowd isn't needed here.
+        _demoUsers = (await db.Users.AsNoTracking().OrderBy(u => u.Id).Take(DemoSeeder.NamedPeople).ToListAsync())
+            .OrderBy(u => u.Login, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>Development only: signs in as a made-up Microsoft account to exercise email matching.</summary>
+    private async Task SignInAsDemoEntra()
+    {
+        var email = IdentityLinkService.NormalizeEmail(DemoEmail);
+        if (!AppOptions.Value.EnableDemoLogin || email is null)
+        {
+            _error = "Enter a work email.";
+            return;
+        }
+
+        var objectId = "demo-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(email)))[..24].ToLowerInvariant();
+        var roles = (DemoRoles ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        var user = await Identities.SignInAsync(objectId, email, null, roles, []);
+        if (user.IsDisabled)
+        {
+            _error = "That account is marked as left, so it can't sign in.";
+            return;
+        }
+        var identity = new ClaimsIdentity(
+        [
+            new Claim(ClaimTypes.Name, email),
+            new Claim("oid", objectId),
+            new Claim(UserSession.UserIdClaim, user.Id.ToString()),
+            new Claim("auth_method", "demo-entra"),
+        ], CookieAuthenticationDefaults.AuthenticationScheme);
+
+        await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+        Navigation.NavigateTo(SafeReturn, forceLoad: true);
+    }
+
+    private async Task SignInAsDemoUser()
+    {
+        if (!AppOptions.Value.EnableDemoLogin || string.IsNullOrWhiteSpace(DemoLogin)) return;
+
+        var user = _demoUsers.FirstOrDefault(u => string.Equals(u.Login, DemoLogin, StringComparison.OrdinalIgnoreCase));
+        if (user is null)
+        {
+            _error = "That user doesn't exist.";
+            return;
+        }
+        if (user.IsDisabled)
+        {
+            _error = $"{user.Login} is marked as left ({user.DisabledReason}), so they can't sign in.";
+            return;
+        }
+
+        var identity = new ClaimsIdentity(
+        [
+            new Claim(ClaimTypes.Name, user.Login),
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new Claim(UserSession.UserIdClaim, user.Id.ToString()),
+            new Claim("auth_method", "demo"),
+        ], CookieAuthenticationDefaults.AuthenticationScheme);
+
+        await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+        Navigation.NavigateTo(SafeReturn, forceLoad: true);
+    }
+}

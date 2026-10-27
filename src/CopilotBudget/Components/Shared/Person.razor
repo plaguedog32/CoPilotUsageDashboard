@@ -1,0 +1,25 @@
+@inject UserSession Session
+<span class="person">
+    <Avatar User="User" Size="Size" />
+    @if (ShowLogin && !string.IsNullOrEmpty(User?.Name))
+    {
+        <span>
+            @if (Session.IsMe(User)) { <span class="name you">You</span> } else { <span class="name">@User.Name</span> }
+            <span class="login">@@@User.Login</span>
+        </span>
+    }
+    else
+    {
+        @if (Session.IsMe(User)) { <span class="name you">You</span> }
+        else { <span class="name" title="@(FullName ? "@" + User?.Login : null)">@(FullName && !string.IsNullOrEmpty(User?.Name) ? User.Name : User?.Login ?? "Unknown")</span> }
+    }
+</span>
+
+@code {
+    [Parameter] public AppUser? User { get; set; }
+    [Parameter] public int Size { get; set; } = 24;
+    [Parameter] public bool ShowLogin { get; set; }
+
+    /// <summary>Show just the person's full name (their GitHub login if there isn't one), with the login on hover.</summary>
+    [Parameter] public bool FullName { get; set; }
+}

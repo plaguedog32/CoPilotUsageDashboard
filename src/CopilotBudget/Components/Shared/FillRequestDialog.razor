@@ -1,0 +1,92 @@
+@* Confirms filling someone's request, with both balances before and after. *@
+@inject BudgetService Budgets
+@inject UserSession Session
+
+<div class="modal-backdrop" @onclick="Cancel">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="fill-dialog-title"
+         @onclick:stopPropagation="true" @onkeydown="OnKeyDown">
+        <div class="modal-header">
+            <h2 id="fill-dialog-title">Fill @Request.Requester.Login's request</h2>
+            <button class="btn ghost sm" type="button" aria-label="Close" @onclick="Cancel"><Icon Name="x" Size="16" /></button>
+        </div>
+
+        <div class="modal-to">
+            <Person User="Request.Requester" Size="32" ShowLogin="true" />
+            <span class="muted small">asked for <strong>@Session.WithUnit(Request.Amount)</strong></span>
+        </div>
+        <p class="secondary small">“@Request.Reason”</p>
+
+        @if (_preview is null)
+        {
+            <div class="loading"><span class="spinner"></span> Checking balances…</div>
+        }
+        else
+        {
+            <TransferBalances SenderName="You" Sender="Session.User" SenderBefore="_preview.SenderBefore"
+                              RecipientName="@Request.Requester.Login" Recipient="Request.Requester" RecipientBefore="_preview.RecipientBefore"
+                              Amount="Request.Amount" />
+            @if (_preview.Problem is not null)
+            {
+                <div class="alert critical mt" role="alert"><span class="icon"><Icon Name="alert" /></span><span>@_preview.Problem</span></div>
+            }
+        }
+
+        <form @onsubmit="Submit">
+            <div class="field mt">
+                <label for="fill-note">Note (optional)</label>
+                <input id="fill-note" @ref="_input" @bind="_note" @bind:event="oninput" maxlength="300" placeholder="e.g. Good luck with the release" />
+            </div>
+            @if (_error is not null)
+            {
+                <div class="hint" role="alert" style="color:#f07a7a">@_error</div>
+            }
+            <div class="modal-actions">
+                <button class="btn ghost" type="button" @onclick="Cancel">Cancel</button>
+                <button class="btn primary" type="submit" disabled="@(_busy || _preview is not { CanSend: true })">
+                    <Icon Name="send" Size="16" /> @(_preview?.NeedsApproval == true ? "Send for approval" : "Send") @Session.WithUnit(Request.Amount)
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public BudgetRequest Request { get; set; } = default!;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<OpResult> OnFilled { get; set; }
+
+    private TransferPreview? _preview;
+    private ElementReference _input;
+    private string _note = "";
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() =>
+        _preview = await Budgets.PreviewTransferAsync(Session.User!.Id, Request.RequesterId, Request.Amount);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) await _input.FocusAsync();
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await Cancel();
+    }
+
+    private Task Cancel() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private async Task Submit()
+    {
+        if (_busy || _preview is not { CanSend: true }) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var result = await Budgets.FillRequestAsync(Session.User!.Id, Request.Id, _note);
+            if (result.Ok) await OnFilled.InvokeAsync(result);
+            else _error = result.Message;
+        }
+        finally { _busy = false; }
+    }
+}

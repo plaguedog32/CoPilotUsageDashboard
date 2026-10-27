@@ -1,0 +1,18 @@
+@* A person's name in a sentence or list. The signed-in person shows as a highlighted "You". *@
+@inject UserSession Session
+
+@if (Session.IsMe(User))
+{
+    <span class="you">You</span>
+}
+else
+{
+    <span>@(User?.Login ?? Fallback)</span>
+}
+
+@code {
+    [Parameter] public AppUser? User { get; set; }
+
+    /// <summary>Shown when there's no user, e.g. "someone".</summary>
+    [Parameter] public string Fallback { get; set; } = "Unknown";
+}

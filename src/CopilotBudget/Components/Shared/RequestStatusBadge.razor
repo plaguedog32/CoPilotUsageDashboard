@@ -1,0 +1,25 @@
+@switch (Status)
+{
+    case RequestStatus.Pending:
+        <span class="badge accent dot">Pending</span>
+        break;
+    case RequestStatus.Approved:
+        <span class="badge good dot">Filled</span>
+        break;
+    case RequestStatus.AwaitingApproval:
+        <span class="badge warning dot">Awaiting approval</span>
+        break;
+    case RequestStatus.Declined:
+        <span class="badge critical dot">Declined</span>
+        break;
+    case RequestStatus.Expired:
+        <span class="badge neutral">Expired</span>
+        break;
+    default:
+        <span class="badge neutral">Cancelled</span>
+        break;
+}
+
+@code {
+    [Parameter] public RequestStatus Status { get; set; }
+}

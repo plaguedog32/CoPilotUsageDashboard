@@ -1,0 +1,46 @@
+@* Usage meter in the credits-left style: solid fill is what's left, hatched is what's used, and the
+   pale blue marker is the share of the month left until the reset (fill past the marker = on pace).
+   Large meters use the full CreditBar; small ones are a slim version for table rows and lists. *@
+@inject UserSession Session
+
+@if (Large)
+{
+    <CreditBar Used="Value" Allocated="Max" Title="@(Label ?? "Usage")" ShowSummary="false" />
+}
+else
+{
+    <div class="meter @Level" role="meter" aria-valuemin="0" aria-valuemax="@Max" aria-valuenow="@Math.Max(0, Max - Value)"
+         aria-label="@($"{Label}. {Session.Amt(Math.Max(0, Max - Value))} left. {PaceText}")" title="@PaceText">
+        <div class="meter-fill" style="width:@Css(LeftPercent)%"></div>
+        @if (Max > 0)
+        {
+            <div class="pace-marker" style="left:@Css((1 - Pace.Elapsed()) * 100)%" aria-hidden="true"></div>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    /// <summary>Credits used.</summary>
+    [Parameter] public decimal Value { get; set; }
+
+    /// <summary>Credits allocated.</summary>
+    [Parameter] public decimal Max { get; set; }
+
+    [Parameter] public bool Large { get; set; }
+    [Parameter] public string? Label { get; set; }
+
+    private double LeftPercent => Max <= 0 ? 0 : Math.Clamp((double)((Max - Value) / Max * 100), 0, 100);
+    private string PaceText => Pace.Describe(Value, Max, Session.Amt, Session.Unit);
+
+    private string Level => LeftPercent switch
+    {
+        <= 0 => "out",
+        <= 15 => "low",
+        _ => "",
+    };
+
+    private static string Css(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+}

@@ -1,0 +1,57 @@
+@* Both sides of a transfer, before and after, so nobody confirms without seeing what happens to each balance. *@
+@inject UserSession Session
+
+<div class="xfer" aria-label="Balances before and after">
+    @{
+        var amount = Math.Max(0, Amount);
+        var received = Held ? 0 : amount;
+        var senderAfter = SenderBefore - amount;
+    }
+    <div class="xfer-side">
+        <div class="xfer-who"><Avatar User="Sender" Size="22" /><span class="@(SenderName == "You" ? "you" : "")">@SenderName</span></div>
+        <div class="xfer-sum">
+            <span class="lbl">Current</span><span></span><span class="lbl">Send</span><span></span><span class="lbl">New</span>
+            <span class="num">@Session.Amt(Math.Max(0, SenderBefore))</span>
+            <span class="op" aria-label="minus">−</span>
+            <span class="num amount-out">@Session.Amt(amount)</span>
+            <span class="op" aria-label="equals">=</span>
+            <strong class="num @(senderAfter < 0 ? "neg" : "")">@Session.Amt(senderAfter)</strong>
+        </div>
+    </div>
+    <div class="xfer-side">
+        <div class="xfer-who"><Avatar User="Recipient" Size="22" /><span class="@(RecipientName == "You" ? "you" : "")">@RecipientName</span></div>
+        <div class="xfer-sum">
+            <span class="lbl">Current</span><span></span><span class="lbl">@(Held ? "Receive now" : "Receive")</span><span></span><span class="lbl">New</span>
+            <span class="num">@Session.Amt(RecipientBefore)</span>
+            <span class="op" aria-label="plus">+</span>
+            <span class="num amount-in">@Session.Amt(received)</span>
+            <span class="op" aria-label="equals">=</span>
+            <strong class="num">@Session.Amt(RecipientBefore + received)</strong>
+        </div>
+    </div>
+    <div class="xfer-note muted small">
+        Credits left this month.
+        @if (Held)
+        {
+            <span> This needs an approver: the amount is held from @(SenderName == "You" ? "you" : SenderName) now, and reaches @RecipientName once approved (or goes back if it isn't approved by month end).</span>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    [Parameter] public string SenderName { get; set; } = "You";
+    [Parameter] public AppUser? Sender { get; set; }
+    [Parameter] public decimal SenderBefore { get; set; }
+    [Parameter] public string RecipientName { get; set; } = "";
+    [Parameter] public AppUser? Recipient { get; set; }
+    [Parameter] public decimal RecipientBefore { get; set; }
+    [Parameter] public decimal Amount { get; set; }
+
+    /// <summary>Admin moves skip approval, so nothing is ever held.</summary>
+    [Parameter] public bool SkipsApproval { get; set; }
+
+    private bool Held => !SkipsApproval && Session.ApprovalRequired && (Session.Settings.ApprovalThreshold is not { } t || Amount >= t);
+}

@@ -1,0 +1,94 @@
+@* Modal for sending credits to one person without leaving the page. Shows both balances before and after.
+   Escape or the backdrop cancels. *@
+@inject BudgetService Budgets
+@inject UserSession Session
+
+<div class="modal-backdrop" @onclick="Cancel">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="send-dialog-title"
+         @onclick:stopPropagation="true" @onkeydown="OnKeyDown">
+        <div class="modal-header">
+            <h2 id="send-dialog-title">Send credits</h2>
+            <button class="btn ghost sm" type="button" aria-label="Close" @onclick="Cancel"><Icon Name="x" Size="16" /></button>
+        </div>
+
+        <form @onsubmit="Submit">
+            <div class="field">
+                <label for="send-dialog-amount">Amount (credits) <span class="muted">@Session.DollarHint(_amount)</span></label>
+                <input id="send-dialog-amount" type="number" min="1" step="1" max="@Sendable"
+                       @ref="_input" @bind="_amount" @bind:event="oninput" />
+                <AmountSlider @bind-Value="_amount" Max="Sendable" Label="Amount to send" />
+                @if (Session.Settings.MinimumKeep > 0)
+                {
+                    <div class="hint">You have to keep at least @Session.WithUnit(Session.Settings.MinimumKeep) for yourself.</div>
+                }
+                @if (_amount > Sendable)
+                {
+                    <div class="hint" style="color:#f07a7a">That's more than you can send.</div>
+                }
+                @if (_error is not null)
+                {
+                    <div class="hint" role="alert" style="color:#f07a7a">@_error</div>
+                }
+            </div>
+
+            <TransferBalances SenderName="You" Sender="Session.User" SenderBefore="Available"
+                              RecipientName="@Recipient.User.Login" Recipient="Recipient.User" RecipientBefore="Recipient.Available"
+                              Amount="_amount" />
+
+            <div class="modal-actions">
+                <button class="btn ghost" type="button" @onclick="Cancel">Cancel</button>
+                <button class="btn primary" type="submit" disabled="@(_busy || _amount <= 0 || _amount > Sendable)">
+                    <Icon Name="send" Size="16" /> @(NeedsApproval ? "Send for approval" : "Send") @Session.WithUnit(Math.Max(0, _amount))
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public MemberBudget Recipient { get; set; } = default!;
+
+    /// <summary>The sender's remaining credits this month.</summary>
+    [Parameter, EditorRequired] public decimal Available { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Called after a successful send, with the result to show on the page.</summary>
+    [Parameter] public EventCallback<OpResult> OnSent { get; set; }
+
+    private ElementReference _input;
+    private decimal _amount = 25;
+    private bool _busy;
+    private string? _error;
+
+    private decimal Sendable => BudgetService.SendableFrom(Available, Session.Settings);
+    private bool NeedsApproval => Session.ApprovalRequired && (Session.Settings.ApprovalThreshold is not { } t || _amount >= t);
+
+    protected override void OnInitialized() => _amount = Math.Min(25, Sendable);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) await _input.FocusAsync();
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await Cancel();
+    }
+
+    private Task Cancel() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private async Task Submit()
+    {
+        if (_busy || _amount <= 0 || _amount > Sendable) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var result = await Budgets.SendAsync(Session.User!.Id, Recipient.User.Id, _amount, null);
+            if (result.Ok) await OnSent.InvokeAsync(result);
+            else _error = result.Message;
+        }
+        finally { _busy = false; }
+    }
+}

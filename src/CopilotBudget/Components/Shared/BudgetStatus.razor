@@ -1,0 +1,34 @@
+@* Status badge for a member's budget. Always text + color, never color alone. *@
+@inject UserSession Session
+@if (!Budget.HasSeat)
+{
+    <span class="badge neutral">No seat</span>
+}
+else if (Budget.Available < 0)
+{
+    <span class="badge critical dot">Over budget</span>
+}
+else if (Budget.PercentUsed >= 85)
+{
+    <span class="badge serious dot">Running low</span>
+}
+else if (Pace.IsAhead(Budget.Used, Budget.Allocated))
+{
+    <span class="badge warning dot" title="Using credits faster than an even spend until the reset">Ahead of pace</span>
+}
+else if (Pace.IsBehind(Budget.Used, Budget.Allocated))
+{
+    var unused = Pace.ProjectedUnused(Budget.Used, Budget.Allocated);
+    <span class="badge accent dot" title="@($"At this pace, about {Session.WithUnit(unused)} ({Format.Percent((double)(unused / Budget.Allocated * 100))} of the budget) will go unused at the reset. Unused credits expire, so they could go to someone running low.")">@Format.Percent((double)(unused / Budget.Allocated * 100)) unused</span>
+}
+else
+{
+    <span class="badge good dot">On pace</span>
+}
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    [Parameter, EditorRequired] public MemberBudget Budget { get; set; } = default!;
+}

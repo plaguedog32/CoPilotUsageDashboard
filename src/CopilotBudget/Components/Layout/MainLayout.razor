@@ -1,0 +1,327 @@
+﻿@inherits LayoutComponentBase
+@implements IDisposable
+@inject UserSession Session
+@inject BudgetService Budgets
+@inject ChangeNotifier Notifier
+@inject LiveStatus Live
+@inject BudgetChangeService Changes
+@inject AlertService Alerts
+@inject NavigationManager Navigation
+
+@* Components that show amounts re-render when the credits/$ choice changes. *@
+<CascadingValue Value="Session.ShowDollars" Name="ShowDollars">
+<div class="shell">
+    <aside class="sidebar">
+        <a class="brand" href="">
+            <img src="icon.svg" alt="" />
+            <span>Copilot Budget<small>Share Copilot credits</small></span>
+        </a>
+
+        <nav class="nav" aria-label="Main">
+            @* People with a budget and admin pages get two collapsible sections. Everyone else, including admins with no
+               Copilot seat (who have no credits of their own), gets the everyday pages as a plain list. *@
+            @if (Session.HasManagePages && !Session.IsAdminOnly)
+            {
+                <button type="button" class="nav-label nav-group-toggle" aria-expanded="@(UserOpen ? "true" : "false")" aria-controls="user-links"
+                        @onclick="() => _userOpen = !UserOpen">
+                    <span>
+                        <span>My credits</span>
+                        @if (!UserOpen && _waitingOnMe + _toApprove > 0)
+                        {
+                            <span class="count" title="Requests and approvals waiting">@(_waitingOnMe + _toApprove)</span>
+                        }
+                    </span>
+                    <span class="chev" aria-hidden="true">▾</span>
+                </button>
+            }
+            @if (!Session.HasManagePages || Session.IsAdminOnly || UserOpen)
+            {
+            <div id="user-links" style="display:contents">
+            <NavLink href="" Match="NavLinkMatch.All"><Icon Name="home" /> Dashboard</NavLink>
+            @if (Session.HasSeat || Session.IsManager)
+            {
+            <NavLink href="requests">
+                <Icon Name="inbox" /> Requests
+                @if (_waitingOnMe > 0)
+                {
+                    <span class="count" title="Requests you can respond to">@_waitingOnMe</span>
+                }
+            </NavLink>
+            }
+            <NavLink href="pools"><Icon Name="wallet" /> Credit pools</NavLink>
+            <NavLink href="members"><Icon Name="users" /> Members</NavLink>
+            @if (Session.SeesCompanyTotals)
+            {
+                <NavLink href="trends"><Icon Name="chart" /> Trends</NavLink>
+            }
+            <NavLink href="usage"><Icon Name="chart" /> Usage breakdown</NavLink>
+            <NavLink href="history"><Icon Name="history" /> History</NavLink>
+            @if (Session.ApprovalRequired || Session.CanApproveTransfers)
+            {
+                <NavLink href="approvals">
+                    <Icon Name="check" /> Approvals
+                    @if (_toApprove > 0)
+                    {
+                        <span class="count" title="Transfers waiting for your approval">@_toApprove</span>
+                    }
+                </NavLink>
+            }
+            </div>
+            }
+            @if (Session.HasManagePages)
+            {
+                <button type="button" class="nav-label nav-group-toggle" aria-expanded="@(ManageOpen ? "true" : "false")" aria-controls="manage-links"
+                        @onclick="() => _manageOpen = !ManageOpen">
+                    <span>
+                        <span>Manage</span>
+                        @if (!ManageOpen && _alerts + _proposals > 0)
+                        {
+                            <span class="count warn" title="Alerts and proposals waiting">@(_alerts + _proposals)</span>
+                        }
+                    </span>
+                    <span class="chev" aria-hidden="true">▾</span>
+                </button>
+                @if (ManageOpen)
+                {
+                <div id="manage-links" style="display:contents">
+                @if (Session.IsAppAdmin)
+                {
+                    <NavLink href="setup">
+                        <Icon Name="check" /> Setup
+                        @if (Session.SetupPending) { <span class="count warn" title="Setup isn't finished">!</span> }
+                    </NavLink>
+                }
+                @if (Session.IsManager || Session.CanManageIntegration)
+                {
+                    <NavLink href="admin" Match="NavLinkMatch.All"><Icon Name="settings" /> Admin</NavLink>
+                }
+                @if (Session.IsAppAdmin || Session.CanManageIntegration || Session.CanSeeEveryone)
+                {
+                    <NavLink href="admin/people"><Icon Name="users" /> People &amp; access</NavLink>
+                }
+                @if (Session.IsManager || Session.IsBudgetAuthority || Session.CanSeeEveryone)
+                {
+                    <NavLink href="admin/budgets">
+                        <Icon Name="wallet" /> Budgets
+                        @if (_proposals > 0)
+                        {
+                            <span class="count" title="Budget increases waiting for a budget authority">@_proposals</span>
+                        }
+                    </NavLink>
+                }
+                @if (Session.CanManageIntegration || Session.CanViewAudit)
+                {
+                    <NavLink href="admin/github"><Icon Name="github" /> GitHub sync</NavLink>
+                    <NavLink href="admin/integration"><Icon Name="sync" /> Integration</NavLink>
+                }
+                @if (Session.CanSeeAlerts)
+                {
+                    <NavLink href="admin/alerts">
+                        <Icon Name="alert" /> Alerts
+                        @if (_alerts > 0)
+                        {
+                            <span class="count warn" title="Open alerts nobody has acknowledged">@_alerts</span>
+                        }
+                    </NavLink>
+                }
+                @if (Session.CanViewAudit)
+                {
+                    <NavLink href="admin/audit"><Icon Name="history" /> Audit log</NavLink>
+                }
+                @if (Session.IsAppAdmin || Session.CanSeeEveryone)
+                {
+                    <NavLink href="reports/month-end"><Icon Name="history" /> Month-end close</NavLink>
+                }
+                </div>
+                }
+            }
+        </nav>
+
+        <div class="sidebar-footer">
+            <Avatar User="Session.User" Size="32" />
+            <div class="who">
+                <strong>@(Session.User?.DisplayName ?? "Signed in")</strong>
+                <span>@(Session.User is null ? "" : Session.User.HasGitHubAccount ? "@" + Session.User.Login
+                         : Session.IsAdminOnly ? BudgetService.RoleNames(Session.Roles) : Session.User.Email)</span>
+            </div>
+            <form action="account/logout" method="post">
+                <AntiforgeryToken />
+                <button class="btn ghost sm" type="submit" title="Sign out" aria-label="Sign out"><Icon Name="logout" /></button>
+            </form>
+        </div>
+    </aside>
+
+    <div class="main">
+        <header class="topbar">
+            <div class="topbar-bars">
+                @* Company totals are for people who run or oversee budgets; everyone else just sees their own bar. *@
+                @if (SeesCompanyTotals)
+                {
+                    <CreditBar Used="_used" Allocated="_allocated" Title="Company-wide" Compact="true" />
+                }
+                @if (_mine is not null)
+                {
+                    <CreditBar Used="_mine.Used + _mine.Held" Allocated="_mine.Allocated" Title="You" Compact="true"
+                               ShowReset="@(!SeesCompanyTotals)" CssClass="@(SeesCompanyTotals ? "secondary" : null)" />
+                }
+            </div>
+            <div class="topbar-right">
+                <div class="seg sm" role="group" aria-label="Show amounts in">
+                    <button type="button" class="@(Session.ShowDollars ? "" : "active")" aria-pressed="@(!Session.ShowDollars)" @onclick="() => Session.SetShowDollarsAsync(false)">Credits</button>
+                    <button type="button" class="@(Session.ShowDollars ? "active" : "")" aria-pressed="@Session.ShowDollars" @onclick="() => Session.SetShowDollarsAsync(true)">$</button>
+                </div>
+                <span class="live @(_flash ? "flash" : "")" title="@LiveTitle"><i aria-hidden="true"></i>Live</span>
+            </div>
+        </header>
+
+        <main class="content">
+            @if (Session.NeedsFirstAdmin && !IsSetupPage)
+            {
+                <div class="alert warning mb">
+                    <span class="icon"><Icon Name="info" /></span>
+                    <span>This app hasn't been set up yet: nobody is an admin. If you're setting it up, <a href="setup">claim admin on the Setup page</a>.</span>
+                </div>
+            }
+            else if (Session.SetupPending && !IsSetupPage)
+            {
+                <div class="alert mb">
+                    <span class="icon"><Icon Name="settings" /></span>
+                    <span>Setup isn't finished yet. <a href="setup">Open the setup checklist</a> to connect GitHub and check everything's in place.</span>
+                </div>
+            }
+            @if (Session.IsDisabledAccount)
+            {
+                <div class="alert critical mb">
+                    <span class="icon"><Icon Name="alert" /></span>
+                    <span>Your account has been marked as left, so there's nothing to show. If that's a mistake, ask an admin.</span>
+                </div>
+            }
+            @if (Session.IsUnlinked && !Session.IsAdminOnly)
+            {
+                <div class="alert warning mb">
+                    <span class="icon"><Icon Name="info" /></span>
+                    <span>
+                        You're signed in as <strong>@Session.User!.Email</strong>, which isn't matched to a GitHub user yet, so you can look
+                        around but not send or request credits. It links automatically once GitHub reports your work email, or an admin can link it now.
+                    </span>
+                </div>
+            }
+            @Body
+        </main>
+    </div>
+</div>
+
+</CascadingValue>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">×</span>
+</div>
+
+@code {
+    private int _waitingOnMe;
+    private int _toApprove;
+    private decimal _used;
+    private decimal _allocated;
+    private MemberBudget? _mine;
+    private Timer? _clock;
+    private int _proposals;
+
+    private bool SeesCompanyTotals => Session.SeesCompanyTotals;
+
+    /// <summary>Null until toggled: then the Manage group starts open on admin pages and closed elsewhere.</summary>
+    private bool? _manageOpen;
+
+    private bool ManageOpen => _manageOpen ?? (IsManagePage || Session.IsAdminOnly);
+
+    /// <summary>Same for the everyday pages: open unless you're on an admin page.</summary>
+    private bool? _userOpen;
+
+    private bool UserOpen => _userOpen ?? (!IsManagePage && !Session.IsAdminOnly);
+
+    private bool IsSetupPage => Navigation.ToBaseRelativePath(Navigation.Uri).StartsWith("setup", StringComparison.OrdinalIgnoreCase);
+
+    private bool IsManagePage
+    {
+        get
+        {
+            var path = Navigation.ToBaseRelativePath(Navigation.Uri);
+            return path.StartsWith("admin", StringComparison.OrdinalIgnoreCase) || path.StartsWith("reports", StringComparison.OrdinalIgnoreCase)
+                   || path.StartsWith("setup", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+    private int _alerts;
+    private bool _flash;
+
+    /// <summary>The page updates over the open connection whenever anything changes or GitHub is synced.</summary>
+    private string LiveTitle =>
+        "Updates live. " +
+        (Live.LastSyncUtc is null ? "GitHub not synced since start-up." : $"GitHub usage synced {Format.Relative(Live.LastSyncUtc)}.") +
+        (Live.LastWriteBackUtc is null ? "" : $" Budgets checked {Format.Relative(Live.LastWriteBackUtc)}.") +
+        (Live.LastSyncProblem is { } p ? $" Last sync problem: {p}" : "");
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Session.EnsureLoadedAsync();
+        Session.Changed += OnChanged;
+        Notifier.Changed += OnDataChanged;
+        await RefreshTotalsAsync();
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        // Tick the reset countdown and pace marker once a minute, on the minute.
+        if (!firstRender) return;
+        var untilNextMinute = TimeSpan.FromSeconds(60 - DateTime.UtcNow.Second);
+        _clock = new Timer(_ => InvokeAsync(StateHasChanged), null, untilNextMinute, TimeSpan.FromMinutes(1));
+    }
+
+    /// <summary>Credits used across everyone for the top bar, and requests this user could act on.</summary>
+    private async Task RefreshTotalsAsync()
+    {
+        if (Session.InUserbase)
+        {
+            var budgets = await Budgets.GetBudgetsAsync(Period.Current);
+            _used = budgets.Sum(b => b.Used);
+            _allocated = budgets.Sum(b => b.Allocated);
+            _mine = budgets.FirstOrDefault(b => b.User.Id == Session.User?.Id && b.HasSeat);
+        }
+
+        if (Session.CanApproveTransfers && Session.User is { } approver)
+        {
+            var pendingTransfers = await Budgets.GetTransfersAsync(TransferStatus.Pending);
+            _toApprove = pendingTransfers.Count(t => t.FromUserId != approver.Id && t.ToUserId != approver.Id);
+        }
+        else _toApprove = 0;
+
+        _proposals = Session.IsManager || Session.IsBudgetAuthority ? (await Changes.GetProposalsAsync(ProposalStatus.Pending)).Count : 0;
+        _alerts = Session.CanSeeAlerts ? await Alerts.CountOpenAsync() : 0;
+
+        var me = Session.User;
+        if (me is null || !Session.HasSeat) { _waitingOnMe = 0; return; }
+        var pending = await Budgets.GetRequestsAsync(RequestStatus.Pending);
+        _waitingOnMe = pending.Count(r => r.TargetId == me.Id || (r.TargetId is null && r.RequesterId != me.Id));
+    }
+
+    private void OnChanged() => _ = InvokeAsync(async () => { await RefreshTotalsAsync(); StateHasChanged(); });
+
+    // Reload the session too, so role and approval-mode changes made by an admin elsewhere show up here.
+    private Task OnDataChanged() => InvokeAsync(async () =>
+    {
+        await Session.RefreshAsync();
+        // Pulse the Live dot so people can see the numbers just updated.
+        _flash = true;
+        StateHasChanged();
+        await Task.Delay(1200);
+        _flash = false;
+        StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        Session.Changed -= OnChanged;
+        Notifier.Changed -= OnDataChanged;
+        _clock?.Dispose();
+    }
+}

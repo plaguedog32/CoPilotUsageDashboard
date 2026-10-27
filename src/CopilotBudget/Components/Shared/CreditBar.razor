@@ -1,0 +1,79 @@
+@* Credits-left bar. The solid fill is what's left; the hatched part is what's been used.
+   The pale blue marker is the share of the month left until the reset: if the fill reaches past it,
+   usage is on pace; if the fill stops short of it, credits are being used faster than the month allows. *@
+@inject UserSession Session
+
+<div class="credit-bar-block @(Compact ? "compact" : "") @(ShowSummary ? "" : "bare") @CssClass">
+    @if (ShowSummary)
+    {
+        <div class="credit-bar-summary">
+            <div class="label">@Title</div>
+            <div class="value">@Format.Percent(LeftPercent)<small>left</small></div>
+        </div>
+    }
+    <div class="credit-bar @Level" role="meter" aria-valuemin="0" aria-valuemax="@Allocated" aria-valuenow="@Math.Max(0, Left)"
+         aria-label="@($"{Title}: {Session.Amt(Math.Max(0, Left))} of {Session.WithUnit(Allocated)} left. {PaceText}. Resets in {Countdown}.")"
+         title="@($"{Session.Amt(Math.Max(0, Left))} of {Session.WithUnit(Allocated)} left · {PaceText}")">
+        <div class="credit-bar-fill" style="width:@Css(LeftPercent)%">
+            @if (LeftPercent >= 12)
+            {
+                <span>@Format.Percent(LeftPercent)</span>
+            }
+        </div>
+        @if (LeftPercent < 12)
+        {
+            <span class="credit-bar-outside" style="left:calc(@Css(LeftPercent)% + 8px)">@Format.Percent(LeftPercent)</span>
+        }
+        <div class="credit-bar-pace" style="left:@Css(TimeLeftPercent)%" aria-hidden="true"></div>
+        @if (ShowReset)
+        {
+            <div class="credit-bar-reset" title="Budgets reset at @Pace.NextResetUtc().ToString("d MMM yyyy, HH:mm") UTC">
+                <span aria-hidden="true">↻</span> @Countdown
+            </div>
+        }
+    </div>
+</div>
+@if (ShowPaceText)
+{
+    <div class="pace-text @(Ahead ? "ahead" : "")"><span class="pace-key" aria-hidden="true"></span>@PaceText</div>
+}
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    [Parameter] public decimal Used { get; set; }
+    [Parameter] public decimal Allocated { get; set; }
+    [Parameter] public string Title { get; set; } = "This month";
+
+    /// <summary>Show the "55% left" summary to the left of the bar.</summary>
+    [Parameter] public bool ShowSummary { get; set; } = true;
+
+    /// <summary>Shorter bar and smaller summary, for the top bar.</summary>
+    [Parameter] public bool Compact { get; set; }
+
+    /// <summary>Show the reset countdown chip inside the bar.</summary>
+    [Parameter] public bool ShowReset { get; set; } = true;
+
+    [Parameter] public string? CssClass { get; set; }
+
+    /// <summary>Show the pace sentence under the bar.</summary>
+    [Parameter] public bool ShowPaceText { get; set; }
+
+    private decimal Left => Allocated - Used;
+    private double LeftPercent => Allocated <= 0 ? 0 : Math.Clamp((double)(Left / Allocated * 100), 0, 100);
+    private double TimeLeftPercent => (1 - Pace.Elapsed()) * 100;
+    private bool Ahead => Pace.IsAhead(Used, Allocated);
+    private string PaceText => Pace.Describe(Used, Allocated, Session.Amt, Session.Unit);
+    private static string Countdown => Pace.Countdown(Pace.UntilReset());
+
+    /// <summary>Fill color steps with how much is left; the pace marker and text carry pace.</summary>
+    private string Level => LeftPercent switch
+    {
+        <= 0 => "out",
+        <= 15 => "low",
+        _ => "",
+    };
+
+    private static string Css(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+}

@@ -1,0 +1,246 @@
+@page "/requests"
+
+<PageTitle>Requests · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.InUserbase)
+{
+    <NoOrgNotice />
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Requests</h1>
+            <p>@(Moderating
+                ? "Everyone's requests for credits. You don't have a Copilot seat, so you can't fill or make requests, but you can decline ones that shouldn't be filled."
+                : $"Ask for {Session.UnitLabel}, fill other people's requests, or send some of yours to anyone in the company.")</p>
+        </div>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <section class="requests-page">
+            @if (!Moderating && !Session.HasSeat)
+            {
+                <div class="alert warning mb">
+                    <span class="icon"><Icon Name="info" /></span>
+                    <span>You don't have a Copilot seat, so you can't make requests.</span>
+                </div>
+            }
+            @if (!Moderating)
+            {
+            <div class="tabs" role="tablist">
+                <button class="tab @(_tab == Tab.Mine ? "active" : "")" role="tab" @onclick="() => _tab = Tab.Mine">
+                    My requests<span class="count">@Mine.Count()</span>
+                </button>
+                <button class="tab @(_tab == Tab.Waiting ? "active" : "")" role="tab" @onclick="() => _tab = Tab.Waiting">
+                    Requests from others<span class="count">@WaitingOnMe.Count()</span>
+                </button>
+                @if (Session.HasSeat)
+                {
+                    <button class="tab @(_tab == Tab.Send ? "active" : "")" role="tab" @onclick="() => _tab = Tab.Send">Send credits</button>
+                }
+            </div>
+            }
+
+            @if (_tab == Tab.Send)
+            {
+                <SendCreditsPanel ToLogin="@ToLogin" />
+            }
+            else
+            {
+                var list = (_tab switch { Tab.Waiting => WaitingOnMe, Tab.Mine => Mine, _ => _requests }).ToList();
+            @if (list.Count == 0 && !(_tab == Tab.Mine && CanRequest))
+            {
+                <div class="card empty">
+                    <Icon Name="inbox" Size="32" />
+                    <strong>@(_tab == Tab.Waiting ? "No requests from others" : "No requests yet")</strong>
+                    @(_tab == Tab.Waiting ? "Requests from other people will appear here." : "Requests you make will appear here.")
+                </div>
+            }
+            @foreach (var r in list)
+            {
+                <article class="request">
+                    <Avatar User="r.Requester" Size="36" />
+                    <div>
+                        <div class="row">
+                            <strong><Who User="r.Requester" /></strong>
+                            <span class="muted small">asked for @Session.WithUnit(r.Amount)</span>
+                            <RequestStatusBadge Status="r.Status" />
+                            <span class="muted small" title="@Format.Timestamp(r.CreatedUtc)">@Format.Relative(r.CreatedUtc)</span>
+                        </div>
+                        <div class="reason">@r.Reason</div>
+                        @if (r.RequesterId != MyId && r.Status == RequestStatus.Pending && _budgetsById.GetValueOrDefault(r.RequesterId) is { } theirs)
+                        {
+                            <div class="request-usage">
+                                <CreditBar Used="theirs.Used" Allocated="theirs.Allocated" Title="@($"{r.Requester.Login}'s usage this month")" ShowSummary="false" ShowPaceText="false" />
+                            </div>
+                        }
+                        @if (r.Status != RequestStatus.Pending && r.ResolvedBy is not null && r.Status != RequestStatus.Cancelled)
+                        {
+                            <div class="reply">
+                                <strong><Who User="r.ResolvedBy" /></strong> @(r.Status switch { RequestStatus.Approved => "sent it", RequestStatus.AwaitingApproval => "offered it, waiting for an approver ·", RequestStatus.Expired => "expired", _ => "declined" })
+                                @Format.Relative(r.ResolvedUtc)@(string.IsNullOrEmpty(r.ResponseNote) ? "" : ": “" + r.ResponseNote + "”")
+                            </div>
+                        }
+                        @if (r.Status == RequestStatus.Pending && !string.IsNullOrEmpty(r.ResponseNote))
+                        {
+                            <div class="reply muted">@r.ResponseNote</div>
+                        }
+                        @if (r.Status == RequestStatus.Pending && (CanApprove(r) || CanDecline(r) || r.RequesterId == MyId))
+                        {
+                            <div class="actions">
+                                @if (CanApprove(r))
+                                {
+                                    <button class="btn primary sm" disabled="@_busy" @onclick="() => _filling = r">
+                                        <Icon Name="send" Size="15" /> Fill request…
+                                    </button>
+                                }
+                                @if (CanDecline(r))
+                                {
+                                    <input placeholder="Reason for declining (optional)" @bind="_notes[r.Id]" @bind:event="oninput" aria-label="Note" />
+                                    <button class="btn danger sm" disabled="@_busy" @onclick="() => Decline(r)"><Icon Name="x" Size="15" /> Decline</button>
+                                }
+                                @if (r.RequesterId == MyId)
+                                {
+                                    <button class="btn sm" disabled="@_busy" @onclick="() => Cancel(r)">Cancel request</button>
+                                }
+                            </div>
+                        }
+                    </div>
+                    <div class="amount">@Session.Amt(r.Amount)<small>@Session.Unit</small></div>
+                </article>
+            }
+            @if (_tab == Tab.Mine && CanRequest)
+            {
+                <section class="card new-request">
+                    <div class="card-header">
+                        <div>
+                            <h2>New request</h2>
+                            <p>You have @Session.WithUnit(Math.Max(0, _myAvailable)) left this month</p>
+                        </div>
+                    </div>
+                    <form @onsubmit="Submit">
+                        <div class="field">
+                            <label for="req-amount">Amount (credits) <span class="muted">@Session.DollarHint(_amount)</span></label>
+                            <input id="req-amount" type="number" min="1" step="1" @bind="_amount" @bind:event="oninput" />
+                            <AmountSlider @bind-Value="_amount" Max="RequestMax" Label="Amount to request" MaxLabel="(a month's budget)" />
+                        </div>
+                        <div class="field">
+                            <label for="req-reason">Why do you need it?</label>
+                            <textarea id="req-reason" maxlength="500" @bind="_reason" placeholder="e.g. Pairing with agent mode on the release branch this week"></textarea>
+                        </div>
+                        <button class="btn primary block" type="submit" disabled="@_busy"><Icon Name="send" Size="16" /> Send request</button>
+                    </form>
+                </section>
+            }
+            }
+    </section>
+
+    @if (_filling is not null)
+    {
+        <FillRequestDialog Request="_filling" OnClose="() => _filling = null" OnFilled="Filled" />
+    }
+}
+
+@code {
+    private enum Tab { Waiting, Mine, All, Send }
+
+    /// <summary>?tab=send opens the Send credits tab (old /send links redirect here); ?to= preselects who to send to.</summary>
+    [SupplyParameterFromQuery(Name = "tab")] private string? TabName { get; set; }
+    [SupplyParameterFromQuery(Name = "to")] private string? ToLogin { get; set; }
+    private bool _appliedTab;
+
+    private Tab _tab = Tab.Waiting;
+    private List<BudgetRequest> _requests = [];
+    private decimal _myAvailable;
+    private decimal _myMonthly;
+    private Dictionary<int, MemberBudget> _budgetsById = [];
+
+    /// <summary>The slider goes up to a month's budget; the number field allows more.</summary>
+    private decimal RequestMax => Math.Max(_myMonthly, 100);
+    private readonly Dictionary<int, string> _notes = new();
+    private decimal _amount = 250;
+    private string _reason = "";
+    private bool _busy;
+
+    private int MyId => Session.User?.Id ?? 0;
+
+    /// <summary>Only people with a seat can ask for credits.</summary>
+    private bool CanRequest => !Moderating && Session.HasSeat;
+
+    /// <summary>Admins and org owners without a seat only oversee requests: they can decline, not make or fill them.</summary>
+    private bool Moderating => !Session.HasSeat && Session.IsManager;
+
+    private IEnumerable<BudgetRequest> WaitingOnMe => !Session.HasSeat ? [] : _requests.Where(r =>
+        r.Status == RequestStatus.Pending && (r.TargetId == MyId || (r.TargetId is null && r.RequesterId != MyId)))
+        .OrderBy(r => ShareLeft(r.RequesterId)).ThenBy(r => r.CreatedUtc);
+
+    /// <summary>Share of their budget the requester has left, so whoever is closest to running out comes first.</summary>
+    private double ShareLeft(int userId) => _budgetsById.GetValueOrDefault(userId) is { Allocated: > 0 } b
+        ? (double)(b.Available / b.Allocated)
+        : double.MaxValue;
+
+    private IEnumerable<BudgetRequest> Mine => _requests.Where(r => r.RequesterId == MyId);
+
+    private bool CanApprove(BudgetRequest r) => Session.HasSeat && r.RequesterId != MyId && (r.TargetId is null || r.TargetId == MyId);
+    private bool CanDecline(BudgetRequest r) => r.RequesterId != MyId && (r.TargetId == MyId || Session.IsManager);
+
+    protected override async Task LoadAsync()
+    {
+        _requests = await Budgets.GetRequestsAsync();
+        foreach (var r in _requests) _notes.TryAdd(r.Id, "");
+
+        var budgets = await Budgets.GetBudgetsAsync(Period.Current);
+        _budgetsById = budgets.ToDictionary(b => b.User.Id);
+        var mine = budgets.FirstOrDefault(b => b.User.Id == MyId);
+        _myAvailable = mine?.Available ?? 0;
+        _myMonthly = mine?.MonthlyBudget ?? 0;
+        if (!_appliedTab)
+        {
+            _appliedTab = true;
+            if (string.Equals(TabName, "send", StringComparison.OrdinalIgnoreCase) && Session.HasSeat) { _tab = Tab.Send; return; }
+        }
+        if (Moderating) _tab = Tab.All;
+        else if (_tab == Tab.Waiting && !WaitingOnMe.Any() && Mine.Any(r => r.Status == RequestStatus.Pending)) _tab = Tab.Mine;
+    }
+
+    private async Task Submit()
+    {
+        await RunAsync(async () =>
+        {
+            var result = await Budgets.CreateRequestAsync(MyId, _amount, _reason);
+            if (result.Ok)
+            {
+                _reason = "";
+                _tab = Tab.Mine;
+            }
+            return result;
+        });
+    }
+
+    private BudgetRequest? _filling;
+
+    private async Task Filled(OpResult result)
+    {
+        _filling = null;
+        await ShowAsync(result);
+    }
+
+    private Task Decline(BudgetRequest r) =>
+        RunAsync(() => Budgets.DeclineRequestAsync(MyId, r.Id, _notes.GetValueOrDefault(r.Id)));
+
+    private Task Cancel(BudgetRequest r) => RunAsync(() => Budgets.CancelRequestAsync(MyId, r.Id));
+
+    private async Task RunAsync(Func<Task<OpResult>> action)
+    {
+        if (_busy) return;
+        _busy = true;
+        try { await ShowAsync(await action()); }
+        finally { _busy = false; }
+    }
+}

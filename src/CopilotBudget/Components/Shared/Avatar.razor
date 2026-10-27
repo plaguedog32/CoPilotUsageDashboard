@@ -1,0 +1,17 @@
+@if (!string.IsNullOrEmpty(User?.AvatarUrl) && !_failed)
+{
+    <img class="avatar" src="@User.AvatarUrl" width="@Size" height="@Size" alt="" loading="lazy"
+         style="width:@(Size)px;height:@(Size)px" @onerror="() => _failed = true" />
+}
+else
+{
+    <span class="avatar" style="width:@(Size)px;height:@(Size)px;font-size:@(Size * 0.42)px" aria-hidden="true">@Initial</span>
+}
+
+@code {
+    [Parameter] public AppUser? User { get; set; }
+    [Parameter] public int Size { get; set; } = 28;
+
+    private bool _failed;
+    private string Initial => string.IsNullOrEmpty(User?.Login) ? "?" : User.Login[..1].ToUpperInvariant();
+}

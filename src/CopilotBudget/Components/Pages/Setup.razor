@@ -1,0 +1,260 @@
+@page "/setup"
+@inject SetupService SetupSvc
+@inject CredentialService Credentials
+
+<PageTitle>Setup · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (Session.User is null)
+{
+    <div class="card empty"><strong>Sign in first</strong></div>
+}
+else if (Session.NeedsFirstAdmin)
+{
+    <div class="page-header">
+        <div>
+            <h1>Set up Copilot Budget</h1>
+            <p>Nobody is an admin yet. The person setting the app up claims admin with a one-time code from the app's log.</p>
+        </div>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <div class="grid grid-main">
+        <section class="card">
+            <div class="card-header"><div><h2>Claim admin</h2><p>Enter the setup code to become the first admin.</p></div></div>
+            <form @onsubmit="Claim">
+                <div class="field">
+                    <label for="setup-code">Setup code</label>
+                    <input id="setup-code" @bind="_code" @bind:event="oninput" placeholder="XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false"
+                           style="font-family:var(--mono);letter-spacing:0.08em;max-width:260px" />
+                </div>
+                <button class="btn primary" type="submit" disabled="@(_busy || string.IsNullOrWhiteSpace(_code))">Claim admin</button>
+            </form>
+        </section>
+        <aside class="card small secondary">
+            <h3>Where's the code?</h3>
+            <ol class="small mt">
+                <li>In the Azure portal, open the web app → <strong>Log stream</strong> (or <em>Diagnose and solve problems</em> → application logs).</li>
+                <li>Look for the line starting <code>FIRST-RUN SETUP</code>. It's written each time the app starts while nobody is an admin.</li>
+                <li>The code works once, for 24 hours. Restart the web app to get a new one.</li>
+            </ol>
+            <p class="small mt">Only people who can see the app's logs in Azure can read it. Prefer not to use a code? Assign yourself the
+                <code>CopilotBudget.Admin</code> app role in Entra (Enterprise applications → Users and groups), or add your email to the
+                <code>App__Admins__0</code> app setting, then sign in again.</p>
+        </aside>
+    </div>
+}
+else if (!Session.IsAppAdmin)
+{
+    <div class="card empty"><strong>The app is set up</strong>Ask an admin if you need access to something.</div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Setup</h1>
+            <p>Everything the app needs to run, and what's still missing. Come back any time.</p>
+        </div>
+        @if (Session.SetupPending)
+        {
+            <button class="btn primary" disabled="@(_busy || _steps.Any(s => !s.Done && !s.Optional))" title="@(_steps.Any(s => !s.Done && !s.Optional) ? "Finish the required steps first" : "")"
+                    @onclick="Complete">Finish setup</button>
+        }
+        else
+        {
+            <span class="badge good dot">Setup finished</span>
+        }
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <section class="card mb">
+        <div class="card-header"><div><h2>Checklist</h2><p>Required steps first; optional ones add features.</p></div></div>
+        <ul class="setup-list">
+            @foreach (var s in _steps.OrderBy(s => s.Optional))
+            {
+                <li class="@(s.Done ? "done" : s.Optional ? "optional" : "todo")">
+                    <span class="setup-mark" aria-hidden="true">@(s.Done ? "✓" : s.Optional ? "○" : "!")</span>
+                    <div>
+                        <strong>@s.Title</strong>@if (s.Optional) { <span class="muted small"> · optional</span> }
+                        <div class="muted small">@s.Detail</div>
+                    </div>
+                    @if (s.Link is not null) { <a class="btn ghost sm" href="@s.Link">Open</a> }
+                </li>
+            }
+        </ul>
+    </section>
+
+    <section class="card">
+        <div class="card-header">
+            <div>
+                <h2>Connect GitHub</h2>
+                <p>Saved straight into Azure Key Vault and read from there; never stored in the app's database or shown again.</p>
+            </div>
+            @if (_keyVault is { } kv)
+            {
+                <span class="badge @(kv.Ok ? "good" : "critical") dot" title="@kv.Detail">Key Vault @(kv.Ok ? "reachable" : "not reachable")</span>
+            }
+        </div>
+
+        @if (Credentials.KeyVaultUri is null)
+        {
+            <div class="alert warning"><span class="icon"><Icon Name="alert" /></span>
+                <span>Key Vault isn't configured, so credentials can't be saved from here. Set the <code>KeyVault__Uri</code> app setting and give the
+                    web app's managed identity the <em>Key Vault Secrets Officer</em> role (see docs/SETUP.md), then reload this page.</span></div>
+        }
+        else
+        {
+            <div class="seg sm mb-sm" role="radiogroup" aria-label="How to connect">
+                <button type="button" role="radio" aria-checked="@(!_useToken)" class="@(!_useToken ? "active" : "")" @onclick="() => _useToken = false">GitHub App (recommended)</button>
+                <button type="button" role="radio" aria-checked="@_useToken" class="@(_useToken ? "active" : "")" @onclick="() => _useToken = true">Personal access token</button>
+            </div>
+            <form @onsubmit="SaveGitHub">
+                @if (!_useToken)
+                {
+                    <div class="field">
+                        <label for="gh-app-id">App ID</label>
+                        <input id="gh-app-id" @bind="_appId" placeholder="@(Credentials.GitHub.AppId ?? "e.g. 1234567")" style="max-width:260px" autocomplete="off" />
+                        <div class="hint">On the GitHub App's settings page, under About.</div>
+                    </div>
+                    <div class="field">
+                        <label for="gh-key">Private key</label>
+                        <textarea id="gh-key" @bind="_privateKey" rows="4" autocomplete="off" spellcheck="false"
+                                  placeholder="@(string.IsNullOrWhiteSpace(Credentials.GitHub.AppPrivateKey) ? "-----BEGIN RSA PRIVATE KEY-----" : "A key is saved. Paste a new one to replace it.")"></textarea>
+                        <div class="row mt-sm">
+                            <InputFile OnChange="LoadKeyFile" accept=".pem" />
+                            <span class="hint">Or choose the .pem file GitHub downloaded.</span>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="field">
+                        <label for="gh-token">Token</label>
+                        <input id="gh-token" type="password" @bind="_token" autocomplete="off"
+                               placeholder="@(Credentials.GitHub.HasToken ? "A token is saved. Paste a new one to replace it." : "ghp_…")" />
+                        <div class="hint">Classic token with <code>manage_billing:copilot</code> and <code>read:org</code> (and <code>manage_billing:enterprise</code> for user budgets). It stops working if its owner leaves.</div>
+                    </div>
+                }
+                <div class="field">
+                    <label for="gh-enterprise">Enterprise slug <span class="muted">(optional)</span></label>
+                    <input id="gh-enterprise" @bind="_enterprise" placeholder="@(Credentials.GitHub.EnterpriseSlug is { Length: > 0 } e ? e : "e.g. contoso")" style="max-width:260px" autocomplete="off" />
+                    <div class="hint">From github.com/enterprises/<strong>slug</strong>. Needed to enforce budgets in GitHub and for cost centers.</div>
+                </div>
+                <div class="row">
+                    <button class="btn primary" type="submit" disabled="@(_busy || !HasInput)">Save to Key Vault and test</button>
+                    <button class="btn" type="button" disabled="@_busy" @onclick="Test">Test current connection</button>
+                </div>
+            </form>
+        }
+
+        @if (_checks is not null)
+        {
+            <ul class="check-list mt">
+                @foreach (var c in _checks)
+                {
+                    <li><span class="badge @(c.Ok ? "good" : "critical") dot">@(c.Ok ? "OK" : "Failed")</span> <strong>@c.Name</strong>
+                        <div class="muted small">@c.Detail</div></li>
+                }
+            </ul>
+        }
+        <p class="muted small mt">Next: add the organizations you manage on the <a href="admin">Admin</a> page, and give other people roles on
+            <a href="admin/people">People &amp; access</a>.</p>
+    </section>
+}
+
+@code {
+    private string _code = "";
+    private bool _busy;
+    private List<SetupStep> _steps = [];
+    private ConnectionCheck? _keyVault;
+    private List<ConnectionCheck>? _checks;
+    private bool _useToken;
+    private string _appId = "";
+    private string _privateKey = "";
+    private string _token = "";
+    private string _enterprise = "";
+
+    private bool HasInput => !string.IsNullOrWhiteSpace(_appId) || !string.IsNullOrWhiteSpace(_privateKey)
+                             || !string.IsNullOrWhiteSpace(_token) || !string.IsNullOrWhiteSpace(_enterprise);
+
+    protected override async Task LoadAsync()
+    {
+        if (!Session.IsAppAdmin) return;
+        _steps = await SetupSvc.GetStatusAsync();
+        if (_keyVault is null && Credentials.KeyVaultUri is not null) _keyVault = await Credentials.CheckKeyVaultAsync();
+        _useToken = Credentials.Mode == "token";
+    }
+
+    private async Task Claim()
+    {
+        _busy = true;
+        try
+        {
+            var result = await SetupSvc.ClaimAdminAsync(Session.User!.Id, _code);
+            if (result.Ok) _code = "";
+            await Session.RefreshAsync();
+            await ShowAsync(result);
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task LoadKeyFile(InputFileChangeEventArgs e)
+    {
+        if (e.File.Size > 16_000) { Result = OpResult.Fail("That file is too big to be a GitHub App private key."); return; }
+        using var reader = new StreamReader(e.File.OpenReadStream(16_000));
+        _privateKey = await reader.ReadToEndAsync();
+    }
+
+    /// <summary>Saves whatever was filled in, one secret at a time, then tests the connection.</summary>
+    private async Task SaveGitHub()
+    {
+        _busy = true;
+        try
+        {
+            var saved = new List<string>();
+            async Task<bool> Save(string name, string value)
+            {
+                if (string.IsNullOrWhiteSpace(value)) return true;
+                var r = await Credentials.SetSecretAsync(Session.User!.Id, name, value);
+                if (!r.Ok) { Result = r; return false; }
+                saved.Add(CredentialService.RotatableSecrets[name]);
+                return true;
+            }
+            var ok = _useToken
+                ? await Save("GitHub--Token", _token)
+                : await Save("GitHub--AppId", _appId) && await Save("GitHub--AppPrivateKey", _privateKey);
+            ok = ok && await Save("GitHub--EnterpriseSlug", _enterprise);
+            // Clear secrets from memory and the page as soon as they're saved.
+            _privateKey = _token = "";
+            if (!ok) return;
+            _appId = _enterprise = "";
+            _checks = await Credentials.TestAsync(Session.User!.Id);
+            await ShowAsync(OpResult.Success($"Saved to Key Vault: {string.Join(", ", saved)}."));
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task Test()
+    {
+        _busy = true;
+        try
+        {
+            _checks = await Credentials.TestAsync(Session.User!.Id);
+            _keyVault = await Credentials.CheckKeyVaultAsync();
+            await ReloadAsync();
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task Complete()
+    {
+        var result = await SetupSvc.CompleteAsync(Session.User!.Id);
+        await Session.RefreshAsync();
+        await ShowAsync(result);
+    }
+}

@@ -1,0 +1,117 @@
+@* Credits per day of the month, stacked by model. Same column style and hover tooltips as the other charts. *@
+@inject UserSession Session
+@{
+    var max = Days.Select(d => d.Credits).DefaultIfEmpty(0).Max();
+    var (axisMax, step) = Relative ? (100m, 25m) : ChartScale.NiceAxis(max);
+    var band = (double)PlotWidth / DaysInMonth;
+    var barWidth = Math.Max(3, Math.Min(16, band * 0.7));
+    double Center(int day) => PadLeft + band * (day - 0.5);
+    double Y(decimal v) => PadTop + PlotHeight * (1 - (double)(v / axisMax));
+    var byDay = Days.ToDictionary(d => d.Day);
+}
+<div class="chart">
+    <div class="chart-legend">
+        @foreach (var (m, i) in Series.Select((m, i) => (m, i)))
+        {
+            <span><i class="key-rect" style="background:@Color(i)"></i>@m</span>
+        }
+    </div>
+    <div class="chart-plot">
+        <svg viewBox="0 0 @Width @Height" role="img" aria-label="@AriaLabel">
+            @for (var t = 0m; t <= axisMax; t += step)
+            {
+                var y = Y(t);
+                <line x1="@PadLeft" x2="@(PadLeft + PlotWidth)" y1="@F(y)" y2="@F(y)" class="grid" />
+                <g><text x="@(PadLeft - 8)" y="@F(y + 4)" class="tick" text-anchor="end">@(Relative ? $"{t:0}%" : Session.Compact(t))</text></g>
+            }
+            @for (var day = 1; day <= DaysInMonth; day++)
+            {
+                if (day != 1 && day % 5 != 0) continue;
+                <g><text x="@F(Center(day))" y="@(Height - 8)" class="tick" text-anchor="middle">@day</text></g>
+            }
+            @foreach (var d in Days)
+            {
+                var top = 0m;
+                for (var i = 0; i < Series.Count; i++)
+                {
+                    var v = Value(d, i);
+                    if (v <= 0) continue;
+                    var y1 = Y(top + v);
+                    var y0 = Y(top);
+                    // 1px gap between segments so stacked colors stay distinct.
+                    <rect x="@F(Center(d.Day) - barWidth / 2)" width="@F(barWidth)" y="@F(y1)" height="@F(Math.Max(0.5, y0 - y1 - 1))" fill="@Color(i)" />
+                    top += v;
+                }
+            }
+        </svg>
+        <div class="chart-hover" style="@OverlayStyle">
+            @for (var day = 1; day <= DaysInMonth; day++)
+            {
+                var d = byDay.GetValueOrDefault(day);
+                <div class="col bar @(day > DaysInMonth / 2 ? "right" : "")" tabindex="0" aria-label="@($"Day {day}")">
+                    <div class="tip" role="tooltip">
+                        <div class="tip-title">@Title(day)</div>
+                        @if (d is null)
+                        {
+                            <div class="tip-note">No data</div>
+                        }
+                        else
+                        {
+                            @for (var i = Series.Count - 1; i >= 0; i--)
+                            {
+                                var v = Value(d, i);
+                                if (v <= 0) continue;
+                                <div class="tip-row"><i class="key-rect" style="background:@Color(i)"></i><strong>@(Relative ? $"{v:0}%" : Session.Amt(v))</strong><span>@Series[i]</span></div>
+                            }
+                            <div class="tip-note">@(Relative ? "Share of that day's use" : Session.WithUnit(d.Credits) + " in total")</div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    [Parameter, EditorRequired] public IReadOnlyList<DailyUsage> Days { get; set; } = [];
+    [Parameter, EditorRequired] public int DaysInMonth { get; set; }
+
+    /// <summary>Models to stack, biggest first. Anything else is grouped as "Other".</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<string> Models { get; set; } = [];
+    [Parameter] public string Period { get; set; } = Services.Period.Current;
+    [Parameter] public string AriaLabel { get; set; } = "Credits used per day, by model";
+
+    private const int MaxSeries = 5;
+    private const int Width = 720, Height = 240, PadLeft = 44, PadRight = 8, PadTop = 12, PadBottom = 26;
+    private const int PlotWidth = Width - PadLeft - PadRight, PlotHeight = Height - PadTop - PadBottom;
+
+    private IReadOnlyList<string> Series => Models.Count <= MaxSeries ? Models : [.. Models.Take(MaxSeries - 1), "Other"];
+
+    private string Color(int i) => Series[i] == "Other" ? ChartScale.Other : ChartScale.Categorical[i % ChartScale.Categorical.Length];
+
+    /// <summary>Show each day as 100%, split by model, instead of credits.</summary>
+    [Parameter] public bool Relative { get; set; }
+
+    private decimal Value(DailyUsage d, int i)
+    {
+        var v = Series[i] == "Other"
+            ? d.ByModel.Where(kv => !Series.Contains(kv.Key)).Sum(kv => kv.Value)
+            : d.ByModel.GetValueOrDefault(Series[i]);
+        return Relative ? (d.Credits <= 0 ? 0 : v / d.Credits * 100) : v;
+    }
+
+    private string Title(int day)
+    {
+        var (y, m) = Services.Period.Parse(Period);
+        return new DateTime(y, m, day).ToString("ddd d MMM", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static string OverlayStyle =>
+        $"left:{100.0 * PadLeft / Width:0.###}%;right:{100.0 * PadRight / Width:0.###}%;" +
+        $"top:{100.0 * PadTop / Height:0.###}%;bottom:{100.0 * PadBottom / Height:0.###}%";
+
+    private static string F(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+}

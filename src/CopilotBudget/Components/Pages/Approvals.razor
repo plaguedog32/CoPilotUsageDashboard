@@ -1,0 +1,160 @@
+@page "/approvals"
+
+<PageTitle>Approvals · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.InUserbase)
+{
+    <NoOrgNotice />
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Approvals</h1>
+            <p>
+                @if (Session.ApprovalRequired)
+                {
+                    <text>Approval is on: @(Session.Settings.ApprovalThreshold is { } t ? $"transfers of {Session.WithUnit(t)} or more wait" : "every transfer waits") here until an approver signs off. The credits are held from the sender until then, and anything undecided at month end expires.</text>
+                }
+                else
+                {
+                    <text>Approval is off, so transfers happen straight away. Anything sent while it was on still needs a decision.</text>
+                }
+            </p>
+        </div>
+        <span class="badge @(Session.ApprovalRequired ? "warning" : "neutral") dot">Approval @(Session.ApprovalRequired ? "on" : "off")</span>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <div class="grid grid-main">
+        <section>
+            @if (Session.CanApproveTransfers)
+            {
+                <h2 class="section-title">Waiting for you<span class="count">@ToApprove.Count()</span></h2>
+                @if (!ToApprove.Any())
+                {
+                    <div class="card empty"><Icon Name="check" Size="28" /><strong>Nothing to approve</strong>Transfers that need an approver will appear here.</div>
+                }
+                @foreach (var t in ToApprove)
+                {
+                    <article class="request">
+                        <Avatar User="t.From" Size="36" />
+                        <div>
+                            <div class="row">
+                                <strong><Who User="t.From" /></strong>
+                                <span class="muted small">→</span>
+                                <strong><Who User="t.To" /></strong>
+                                <span class="muted small" title="@Format.Timestamp(t.CreatedUtc)">@Format.Relative(t.CreatedUtc)</span>
+                            </div>
+                            <div class="reason">@Describe(t)</div>
+                            <div class="actions">
+                                <input placeholder="Note (optional)" @bind="_notes[t.Id]" @bind:event="oninput" aria-label="Note" />
+                                <button class="btn primary sm" disabled="@_busy" @onclick="() => Approve(t)"><Icon Name="check" Size="15" /> Approve</button>
+                                <button class="btn danger sm" disabled="@_busy" @onclick="() => Reject(t)"><Icon Name="x" Size="15" /> Reject</button>
+                            </div>
+                        </div>
+                        <div class="amount">@Session.Amt(t.Amount)<small>@Session.Unit</small></div>
+                    </article>
+                }
+            }
+
+            <h2 class="section-title @(Session.CanApproveTransfers ? "mt" : "")">Your transfers<span class="count">@Mine.Count()</span></h2>
+            @if (!Mine.Any())
+            {
+                <div class="card empty"><strong>Nothing of yours is waiting</strong>Credits you send or receive while approval is on show up here until they're decided.</div>
+            }
+            @foreach (var t in Mine)
+            {
+                var giving = t.FromUserId == Session.User!.Id;
+                <article class="request">
+                    <Avatar User="giving ? t.To : t.From" Size="36" />
+                    <div>
+                        <div class="row">
+                            <strong>@(giving ? $"To {t.To.Login}" : $"From {t.From.Login}")</strong>
+                            <span class="badge warning dot">Waiting for approval</span>
+                            <span class="muted small">@Format.Relative(t.CreatedUtc)</span>
+                        </div>
+                        <div class="reason">@Describe(t)</div>
+                        @if (giving)
+                        {
+                            <div class="actions">
+                                <button class="btn sm" disabled="@_busy" @onclick="() => Cancel(t)">Cancel transfer</button>
+                            </div>
+                        }
+                    </div>
+                    <div class="amount">@Session.Amt(t.Amount)<small>@Session.Unit</small></div>
+                </article>
+            }
+        </section>
+
+        <aside class="card">
+            <div class="card-header"><h2>Recent decisions</h2></div>
+            @if (_recent.Count == 0)
+            {
+                <div class="empty"><strong>None yet</strong></div>
+            }
+            else
+            {
+                <div class="feed">
+                    @foreach (var t in _recent)
+                    {
+                        <div class="feed-item">
+                            <Avatar User="t.ResolvedBy" Size="28" />
+                            <div class="text">
+                                <strong><Who User="t.ResolvedBy" Fallback="Someone" /></strong>
+                                @(t.Status switch { TransferStatus.Approved => "approved", TransferStatus.Rejected => "rejected", TransferStatus.Expired => "let expire", _ => "cancelled" })
+                                <strong><Who User="t.From" /></strong> → <strong><Who User="t.To" /></strong>
+                                <span class="@(t.Status == TransferStatus.Approved ? "amount-in" : "muted")">@Session.Amt(t.Amount)</span>
+                                @if (!string.IsNullOrEmpty(t.ResponseNote)) { <div class="muted small">@t.ResponseNote</div> }
+                            </div>
+                            <span class="when">@Format.Relative(t.ResolvedUtc)</span>
+                        </div>
+                    }
+                </div>
+            }
+        </aside>
+    </div>
+}
+
+@code {
+    private List<PendingTransfer> _pending = [];
+    private List<PendingTransfer> _recent = [];
+    private readonly Dictionary<int, string> _notes = [];
+    private bool _busy;
+
+    private int MyId => Session.User?.Id ?? 0;
+
+    /// <summary>Approvers can't decide transfers they're part of.</summary>
+    private IEnumerable<PendingTransfer> ToApprove => _pending.Where(t => t.FromUserId != MyId && t.ToUserId != MyId);
+    private IEnumerable<PendingTransfer> Mine => _pending.Where(t => t.FromUserId == MyId || t.ToUserId == MyId);
+
+    protected override async Task LoadAsync()
+    {
+        _pending = (await Budgets.GetTransfersAsync(TransferStatus.Pending)).OrderBy(t => t.CreatedUtc).ToList();
+        foreach (var t in _pending) _notes.TryAdd(t.Id, "");
+        _recent = (await Budgets.GetTransfersAsync(take: 60))
+            .Where(t => t.Status != TransferStatus.Pending)
+            .OrderByDescending(t => t.ResolvedUtc).Take(10).ToList();
+    }
+
+    private static string Describe(PendingTransfer t) =>
+        t.BudgetRequest is not null ? $"Filling request #{t.BudgetRequest.Id}: {t.BudgetRequest.Reason}"
+        : string.IsNullOrEmpty(t.Note) ? "Sent credits" : t.Note;
+
+    private Task Approve(PendingTransfer t) => Run(() => Budgets.ApproveTransferAsync(MyId, t.Id, _notes.GetValueOrDefault(t.Id)));
+    private Task Reject(PendingTransfer t) => Run(() => Budgets.RejectTransferAsync(MyId, t.Id, _notes.GetValueOrDefault(t.Id)));
+    private Task Cancel(PendingTransfer t) => Run(() => Budgets.CancelTransferAsync(MyId, t.Id));
+
+    private async Task Run(Func<Task<OpResult>> action)
+    {
+        if (_busy) return;
+        _busy = true;
+        try { await ShowAsync(await action()); }
+        finally { _busy = false; }
+    }
+}

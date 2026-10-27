@@ -1,0 +1,369 @@
+@page "/admin/people"
+@inject IdentityLinkService Identities
+@inject RoleMappingService Mappings
+@inject DepartureService Departures
+
+<PageTitle>People &amp; access · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.IsAppAdmin && !Session.CanManageIntegration && !Session.CanSeeEveryone)
+{
+    <div class="card empty"><strong>Admins only</strong></div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>People &amp; access</h1>
+            <p>Roles, how Entra app roles and groups map to them, Microsoft↔GitHub account links, and people who have left.</p>
+        </div>
+        <a class="btn ghost sm" href="admin">Back to admin</a>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    @if (_departures.Any(d => !d.Handled))
+    {
+        <section class="card mb attention">
+            <div class="card-header">
+                <div>
+                    <h2>People who left<span class="count warn">@_departures.Count(d => !d.Handled)</span></h2>
+                    <p>
+                        They no longer get credits, are hidden from everyday lists, and anything they had pending was cancelled.
+                        Reassign what they still hold in one step.
+                    </p>
+                </div>
+            </div>
+            @foreach (var d in _departures.Where(d => !d.Handled))
+            {
+                <div class="departure">
+                    <div class="departure-who">
+                        <Person User="d.User" Size="32" ShowLogin="true" />
+                        <div class="muted small">@d.User.DisabledReason · @Format.Relative(d.User.DisabledUtc)</div>
+                    </div>
+                    <ul class="plain-list small">
+                        <li><strong>@Session.WithUnit(d.CreditsLeft)</strong> left this month</li>
+                        @foreach (var r in d.Reserves) { <li>Personal reserve <strong>@r.Pool.Name</strong> (@Session.WithUnit(r.Balance))</li> }
+                        @foreach (var p in d.SharedPools) { <li>Member of shared pool <strong>@p.Pool.Name</strong></li> }
+                        @if (d.Roles != AppRole.None) { <li>Roles: @BudgetService.RoleNames(d.Roles)</li> }
+                        @if (d.SeatOrganizations.Count > 0)
+                        {
+                            <li class="warn-text">Still has a Copilot seat in @string.Join(", ", d.SeatOrganizations). Remove it in GitHub to stop the seat charge.</li>
+                        }
+                        @if (!d.HasSomethingToReassign) { <li class="muted">Nothing left to reassign.</li> }
+                    </ul>
+                    @if (Session.IsAppAdmin)
+                    {
+                        <div class="departure-actions">
+                            <label class="small" for="@($"to-{d.User.Id}")">Give what's left to</label>
+                            <select id="@($"to-{d.User.Id}")" @bind="_reassignTo[d.User.Id]">
+                                <option value="0">Nobody: return the credits, archive reserves</option>
+                                @foreach (var b in _seatHolders.Where(b => b.User.Id != d.User.Id))
+                                {
+                                    <option value="@b.User.Id">@b.User.Login@(b.User.Name is null ? "" : $" ({b.User.Name})")</option>
+                                }
+                            </select>
+                            <button class="btn primary sm" disabled="@_busy" @onclick="() => Reassign(d)">Reassign everything</button>
+                            <button class="btn ghost sm" disabled="@_busy" @onclick="() => Run(() => Departures.RestoreAsync(Session.User!.Id, d.User.Id))">They're back</button>
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+    }
+
+    <div class="stack">
+        <section class="card">
+            <div class="card-header">
+                <div>
+                    <h2>People &amp; roles</h2>
+                    <p>
+                        <strong>Admin</strong> everything · <strong>Approver</strong> approves transfers · <strong>Budget authority</strong> approves spend increases ·
+                        <strong>Budget visibility</strong> sees everyone's budgets · <strong>Integration admin</strong> runs connections and links, not budgets ·
+                        <strong>Auditor</strong> reads everything, including the audit log. Roles marked <em>Entra</em> come from role mappings.
+                    </p>
+                </div>
+                <div class="row nowrap" style="gap:12px">
+                    <label class="small nowrap"><input type="checkbox" @bind="_showLeft" /> Show people who left</label>
+                    <input type="search" placeholder="Filter people" @bind="_filter" @bind:event="oninput" aria-label="Filter people" style="width:200px" />
+                </div>
+            </div>
+            <div class="table-wrap roles-table">
+                <table>
+                    <thead><tr><th>Person</th><th>Work email</th><th>Roles</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var p in FilteredPeople)
+                        {
+                            var configured = Budgets.IsConfiguredAdmin(p);
+                            <tr class="@(p.IsDisabled ? "left" : "")">
+                                <td>
+                                    <Person User="p" Size="24" ShowLogin="true" />
+                                    @if (!p.HasGitHubAccount) { <span class="badge warning">No GitHub user</span> }
+                                    @if (p.IsDisabled) { <span class="badge neutral">Left</span> }
+                                    @if (p.GitHubId is not null) { <div class="muted small" title="GitHub's user ID: matching survives a renamed account">GitHub ID @p.GitHubId</div> }
+                                </td>
+                                <td class="email-cell">
+                                    @if (p.HasGitHubAccount && Session.CanManageIntegration)
+                                    {
+                                        <input type="email" value="@p.Email" placeholder="name@company.com" aria-label="@($"Work email for {p.Login}")"
+                                               @onchange="e => Run(() => Identities.SetEmailAsync(Session.User!.Id, p.Id, e.Value?.ToString()))" />
+                                    }
+                                    else
+                                    {
+                                        <span class="secondary small">@p.Email</span>
+                                    }
+                                    <div class="muted small">
+                                        @if (p.EntraObjectId is not null) { <span title="Signs in with this Microsoft account">✓ Microsoft account linked</span> }
+                                        else if (p.Email is null) { <span>No email yet, can't match a sign-in</span> }
+                                        else { <span>Not signed in yet</span> }
+                                        @if (p.EmailSource == "github-saml") { <span> · from GitHub SSO</span> }
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="role-cell">
+                                        <div class="role-chips">
+                                            @foreach (var role in BudgetService.AllRoles.Where(r => (Budgets.RolesOf(p) & r) != 0 || p.AssignedRoles.HasFlag(r)))
+                                            {
+                                                var fromEntra = p.DirectoryRoles.HasFlag(role);
+                                                var fromConfig = role == AppRole.Admin && configured;
+                                                <span class="role-chip on @(fromEntra || fromConfig ? "locked" : "")"
+                                                      title="@(fromConfig ? "Admin through the App:Admins setting" : fromEntra ? "From an Entra app role or group (role mappings)" : "Assigned here")">
+                                                    @BudgetService.RoleName(role)@(fromEntra ? " · Entra" : fromConfig ? " · settings" : "")
+                                                </span>
+                                            }
+                                            @if (Budgets.RolesOf(p) == AppRole.None && p.AssignedRoles == AppRole.None)
+                                            {
+                                                <span class="muted small">No roles</span>
+                                            }
+                                        </div>
+                                        @if (Session.IsAppAdmin && !p.IsDisabled)
+                                        {
+                                            <button type="button" class="btn ghost sm icon-btn" title="@($"Edit {p.Login}'s roles")" aria-label="@($"Edit {p.Login}'s roles")"
+                                                    @onclick="() => _editingRoles = p"><Icon Name="pencil" Size="15" /></button>
+                                        }
+                                    </div>
+                                </td>
+                                <td class="nowrap" style="text-align:right">
+                                    @if (Session.IsAppAdmin && !p.IsDisabled && p.Id != Session.User!.Id)
+                                    {
+                                        @if (_confirmLeave == p.Id)
+                                        {
+                                            <button class="btn danger sm" @onclick="() => { _confirmLeave = null; return Run(() => Departures.MarkLeftAsync(Session.User!.Id, p.Id)); }">Confirm: has left</button>
+                                            <button class="btn ghost sm" @onclick="() => _confirmLeave = null">Cancel</button>
+                                        }
+                                        else
+                                        {
+                                            <button class="btn ghost sm" title="Stop their credits, cancel what's pending, and hide them from everyday lists" @onclick="() => _confirmLeave = p.Id">Mark as left</button>
+                                        }
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <div class="grid grid-2">
+            <section class="card">
+                <div class="card-header">
+                    <div>
+                        <h2>Roles from Entra</h2>
+                        <p>People get these roles at sign-in from their Entra app roles or groups. Only admins change mappings.</p>
+                    </div>
+                </div>
+                @if (_mappings.Count == 0)
+                {
+                    <div class="empty small"><strong>No mappings</strong>Roles are only assigned by hand.</div>
+                }
+                <ul class="mapping-list">
+                    @foreach (var m in _mappings)
+                    {
+                        <li>
+                            <span class="badge neutral">@(m.Source == RoleSource.Group ? "Group" : "App role")</span>
+                            <span class="mapping-value" title="@m.Value">@(m.Label ?? m.Value)</span>
+                            <span class="arrow" aria-hidden="true">→</span>
+                            <strong>@BudgetService.RoleName(m.Role)</strong>
+                            @if (Session.IsAppAdmin)
+                            {
+                                <button class="btn ghost sm" aria-label="Remove mapping" @onclick="() => Run(() => Mappings.RemoveAsync(Session.User!.Id, m.Id))"><Icon Name="x" Size="14" /></button>
+                            }
+                        </li>
+                    }
+                </ul>
+                @if (Session.IsAppAdmin)
+                {
+                    <form class="mapping-form mt" @onsubmit="AddMapping">
+                        <div class="row">
+                            <select @bind="_newSource" aria-label="Kind">
+                                <option value="@RoleSource.AppRole">App role</option>
+                                <option value="@RoleSource.Group">Group</option>
+                            </select>
+                            <select @bind="_newRole" aria-label="Role">
+                                @foreach (var role in BudgetService.AllRoles) { <option value="@role">@BudgetService.RoleName(role)</option> }
+                            </select>
+                        </div>
+                        <input list="seen-claims" @bind="_newValue" placeholder="@(_newSource == RoleSource.Group ? "Group object ID" : "App role value, e.g. CopilotBudget.Auditor")" aria-label="Value" />
+                        <datalist id="seen-claims">
+                            @foreach (var v in SeenValues(_newSource)) { <option value="@v"></option> }
+                        </datalist>
+                        <input @bind="_newLabel" placeholder="Label (optional), e.g. Finance team" aria-label="Label" />
+                        <button class="btn primary sm" type="submit">Add mapping</button>
+                    </form>
+                    <p class="muted small mt">
+                        Define app roles in the app registration (App roles) and assign people or groups to them in Enterprise applications.
+                        For groups, add the <em>groups</em> claim to the token. Changes apply at each person's next sign-in.
+                    </p>
+                }
+            </section>
+
+            @if (_people.Any(p => !p.HasGitHubAccount && !p.IsDisabled))
+            {
+                <section class="card">
+                    <div class="card-header">
+                        <div>
+                            <h2>Sign-ins to link</h2>
+                            <p>Microsoft accounts with no matching GitHub user. Pick theirs, or set the GitHub user's work email.</p>
+                        </div>
+                    </div>
+                    @foreach (var p in _people.Where(p => !p.HasGitHubAccount && !p.IsDisabled).OrderBy(p => p.Roles != AppRole.None))
+                    {
+                        <div class="link-row">
+                            <div>
+                                <strong>@(p.Name ?? p.Email)</strong>
+                                <div class="muted small">@p.Email · @Format.Relative(p.LastLoginUtc)</div>
+                                @if (p.Roles != AppRole.None || Budgets.IsConfiguredAdmin(p))
+                                {
+                                    <div class="muted small">Has a role (@BudgetService.RoleNames(Budgets.RolesOf(p))). Fine without a GitHub user if they don't use Copilot.</div>
+                                }
+                            </div>
+                            @if (Session.CanManageIntegration)
+                            {
+                                <select @bind="_linkTo[p.Id]" aria-label="@($"GitHub user for {p.Email}")">
+                                    <option value="0">Choose GitHub user…</option>
+                                    @foreach (var g in _people.Where(g => g.HasGitHubAccount && g.EntraObjectId is null && !g.IsDisabled))
+                                    {
+                                        <option value="@g.Id">@g.Login@(g.Name is null ? "" : $" ({g.Name})")</option>
+                                    }
+                                </select>
+                                <button class="btn primary sm" disabled="@(_linkTo.GetValueOrDefault(p.Id) == 0)"
+                                        @onclick="() => Run(() => Identities.LinkAsync(Session.User!.Id, p.Id, _linkTo.GetValueOrDefault(p.Id)))">Link</button>
+                            }
+                        </div>
+                    }
+                </section>
+            }
+
+            <section class="card">
+                <div class="card-header">
+                    <div>
+                        <h2>Entra account check</h2>
+                        <p>@Departures.Directory.Description</p>
+                    </div>
+                </div>
+                <p class="small secondary">
+                    Every few hours the app asks Entra whether linked accounts are still enabled. Disabled or deleted accounts are marked as left
+                    automatically; an admin can also mark someone by hand.
+                </p>
+                @if (Departures.Directory.IsAvailable && Session.CanManageIntegration)
+                {
+                    <button class="btn sm" disabled="@_busy" @onclick="() => Run(() => Departures.CheckDirectoryAsync(Session.User!.Id))"><Icon Name="sync" Size="15" /> Check now</button>
+                }
+                @if (_departures.Any(d => d.Handled))
+                {
+                    <h3 class="mt">Already handled</h3>
+                    <ul class="plain-list small">
+                        @foreach (var d in _departures.Where(d => d.Handled))
+                        {
+                            <li>@d.User.Login · left @Format.Relative(d.User.DisabledUtc) · handled @Format.Relative(d.User.DepartureHandledUtc)</li>
+                        }
+                    </ul>
+                }
+            </section>
+        </div>
+    </div>
+
+    @if (_editingRoles is not null)
+    {
+        <EditRolesDialog Person="_editingRoles" OnClose="() => _editingRoles = null" OnSaved="RolesSaved" />
+    }
+}
+
+@code {
+    private List<AppUser> _people = [];
+    private List<RoleMapping> _mappings = [];
+    private List<Departure> _departures = [];
+    private List<MemberBudget> _seatHolders = [];
+    private readonly Dictionary<int, int> _linkTo = [];
+    private readonly Dictionary<int, int> _reassignTo = [];
+    private string _filter = "";
+    private bool _showLeft;
+    private bool _busy;
+    private int? _confirmLeave;
+    private AppUser? _editingRoles;
+
+    private async Task RolesSaved(OpResult result)
+    {
+        _editingRoles = null;
+        await ShowAsync(result);
+        await Session.RefreshAsync();
+    }
+    private RoleSource _newSource = RoleSource.AppRole;
+    private AppRole _newRole = AppRole.Auditor;
+    private string _newValue = "";
+    private string _newLabel = "";
+
+    protected override async Task LoadAsync()
+    {
+        _people = await Budgets.GetPeopleAsync();
+        foreach (var p in _people.Where(p => !p.HasGitHubAccount)) _linkTo.TryAdd(p.Id, 0);
+        _mappings = await Mappings.GetAsync();
+        _departures = await Departures.GetDeparturesAsync();
+        foreach (var d in _departures) _reassignTo.TryAdd(d.User.Id, 0);
+        _seatHolders = (await Budgets.GetBudgetsAsync(Period.Current)).Where(b => b.HasSeat && !b.User.IsDisabled)
+            .OrderBy(b => b.User.Login, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private IEnumerable<AppUser> FilteredPeople => _people.Where(p =>
+        (_showLeft || !p.IsDisabled)
+        && (string.IsNullOrWhiteSpace(_filter)
+            || p.Login.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+            || (p.Name?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (p.Email?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false)));
+
+    /// <summary>App role values and group IDs seen in recent sign-in tokens, to help fill in mappings.</summary>
+    private IEnumerable<string> SeenValues(RoleSource source)
+    {
+        var prefix = source == RoleSource.Group ? "group:" : "role:";
+        return _people.SelectMany(p => (p.DirectoryClaims ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries))
+            .Where(c => c.StartsWith(prefix)).Select(c => c[prefix.Length..]).Distinct().Order();
+    }
+
+    private async Task AddMapping()
+    {
+        var result = await Mappings.AddAsync(Session.User!.Id, _newSource, _newValue, _newLabel, _newRole);
+        if (result.Ok) { _newValue = ""; _newLabel = ""; }
+        await ShowAsync(result);
+    }
+
+    private Task Reassign(Departure d)
+    {
+        var to = _reassignTo.GetValueOrDefault(d.User.Id);
+        return Run(() => Departures.ReassignAsync(Session.User!.Id, d.User.Id, to == 0 ? null : to));
+    }
+
+    private async Task Run(Func<Task<OpResult>> action)
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await ShowAsync(await action());
+            await Session.RefreshAsync();
+        }
+        finally { _busy = false; }
+    }
+}

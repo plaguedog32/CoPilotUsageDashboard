@@ -1,0 +1,474 @@
+@page "/admin"
+@using Microsoft.EntityFrameworkCore
+@inject OrgSyncService Sync
+@inject IdentityLinkService Identities
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject BudgetChangeService Changes
+
+<PageTitle>Admin · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.IsManager && !Session.CanManageIntegration)
+{
+    <div class="card empty"><strong>Admins only</strong>Ask an org owner or app admin if you need changes made.</div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Admin</h1>
+            <p>Organizations control who gets a Copilot seat and how many @Session.UnitLabel they start each month with. Organizations only matter here: everyone else sees one company-wide budget and can send to or ask anyone.</p>
+        </div>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <nav class="admin-links mb" aria-label="Admin pages">
+        @if (Session.IsAppAdmin || Session.CanManageIntegration)
+        {
+            <a class="btn sm" href="admin/people"><Icon Name="users" Size="15" /> People &amp; access</a>
+            <a class="btn sm" href="admin/integration"><Icon Name="sync" Size="15" /> Integration</a>
+        }
+        <a class="btn sm" href="admin/budgets"><Icon Name="wallet" Size="15" /> Budgets &amp; exceptions
+            @if (_pendingProposals > 0) { <span class="count">@_pendingProposals</span> }</a>
+        <a class="btn sm" href="admin/github"><Icon Name="github" Size="15" /> GitHub budget sync
+            @if (_needReconcile > 0) { <span class="count warn">@_needReconcile</span> }</a>
+        <a class="btn sm" href="reports/month-end"><Icon Name="history" Size="15" /> Month-end close</a>
+        <a class="btn sm" href="usage"><Icon Name="chart" Size="15" /> Usage breakdown</a>
+    </nav>
+
+    @if (!Sync.CanSync)
+    {
+        <div class="alert warning">
+            <span class="icon"><Icon Name="alert" /></span>
+            <span>
+                GitHub isn't connected, so real organizations can't be synced. Set up a GitHub App (recommended) or a token
+                on the <a href="admin/integration">Integration</a> page (see the README).
+            </span>
+        </div>
+    }
+
+    @if (Session.IsAppAdmin)
+    {
+        <div class="grid grid-2 mb">
+            <div style="display:contents">
+            <section class="card">
+                <div class="card-header">
+                    <div>
+                        <h2>Transfer rules</h2>
+                        <p>When transfers need an approver, and how much people must keep for themselves.</p>
+                    </div>
+                </div>
+                <form @onsubmit="SaveTransferRules">
+                    <label class="switch lg">
+                        <input type="checkbox" checked="@_requireApproval" @onchange="e => _requireApproval = (bool)e.Value!" />
+                        <span class="switch-track" aria-hidden="true"></span>
+                        <span class="switch-label">Require approval for transfers</span>
+                    </label>
+                    @if (_requireApproval)
+                    {
+                        <div class="field mt">
+                            <label for="threshold">Only for transfers of at least (credits)</label>
+                            <input id="threshold" type="number" min="0" step="1" placeholder="Every transfer" @bind="_threshold" />
+                            <div class="hint">Leave empty (or 0) to send every transfer for approval. @(_threshold is > 0 ? $"Smaller ones happen straight away. {Session.DollarHint(_threshold.Value)}" : "")</div>
+                        </div>
+                    }
+                    <div class="field mt">
+                        <label for="min-keep">Minimum each sender keeps (credits)</label>
+                        <input id="min-keep" type="number" min="0" step="1" @bind="_minimumKeep" />
+                        <div class="hint">Stops people sending all their credits away. 0 lets them send everything.</div>
+                    </div>
+                    <button class="btn primary sm" type="submit">Save transfer rules</button>
+                </form>
+                <ul class="plain-list mt small secondary">
+                    <li>Held transfers come out of the sender's balance until they're approved, rejected, or the month ends.</li>
+                    <li>Approvers can't approve transfers they send or receive.</li>
+                    <li>Requests and held transfers still open at month end expire.</li>
+                </ul>
+                <div class="mt small">
+                    @{ var approvers = _people.Where(p => p.IsApprover).ToList(); }
+                    @if (approvers.Count == 0)
+                    {
+                        <span class="badge warning dot">No approvers yet</span>
+                        <span class="muted"> App admins can approve until you add some.</span>
+                    }
+                    else
+                    {
+                        <span class="muted">Approvers: </span>
+                        @foreach (var a in approvers) { <span class="badge neutral" style="margin:2px">@a.Login</span> }
+                    }
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="card-header">
+                    <div>
+                        <h2>Budget authority</h2>
+                        <p>Any admin or org owner can raise budgets. With this on, increases to total spend wait for a budget authority.</p>
+                    </div>
+                </div>
+                <label class="switch lg">
+                    <input type="checkbox" checked="@Session.Settings.RequireBudgetAuthority" @onchange="e => SetBudgetAuthority((bool)e.Value!)" />
+                    <span class="switch-track" aria-hidden="true"></span>
+                    <span class="switch-label">Increases need a budget authority</span>
+                </label>
+                <div class="mt small">
+                    @{ var authorities = _people.Where(p => p.IsBudgetAuthority).ToList(); }
+                    @if (authorities.Count == 0)
+                    {
+                        <span class="badge warning dot">No budget authority yet</span>
+                        <span class="muted"> Increases will wait until someone is given the role.</span>
+                    }
+                    else
+                    {
+                        <span class="muted">Budget authorities: </span>
+                        @foreach (var a in authorities) { <span class="badge neutral" style="margin:2px">@a.Login</span> }
+                    }
+                </div>
+            </section>
+            </div>
+        </div>
+    }
+
+    <div class="org-cards">
+        @foreach (var org in _orgs)
+        {
+            var seats = _seatCounts.GetValueOrDefault(org.Id);
+            <section class="card org-card">
+                <div class="card-header">
+                    <div>
+                        <h2>@org.Name</h2>
+                        <p>@@@org.Login @(org.PlanType is null ? "" : "· " + org.PlanType)</p>
+                    </div>
+                    @if (org.IsDemo) { <span class="badge warning">Demo data</span> }
+                </div>
+
+                <ResultAlert Result="_cardResults.GetValueOrDefault(org.Id)" ResultChanged="r => _cardResults[org.Id] = r" />
+
+                @if (Session.CanManage(org.Id))
+                {
+                <form @onsubmit="() => SaveBudget(org)">
+                    <div class="field">
+                        <label for="@($"budget-{org.Id}")">Monthly budget per member (@Session.UnitLabel)</label>
+                        <div class="row">
+                            <input id="@($"budget-{org.Id}")" type="number" min="0" step="1" style="flex:1;min-width:120px"
+                                   value="@Input(org).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)" @oninput="e => SetInput(org.Id, e)" />
+                            <button class="btn primary" type="submit" disabled="@(Input(org) == org.DefaultMonthlyAllocation)">
+                                @(_orgPreviews.GetValueOrDefault(org.Id)?.NeedsBudgetAuthority == true ? "Send for approval" : "Save")
+                            </button>
+                        </div>
+                        <div class="hint">
+                            @seats @(seats == 1 ? "member" : "members") with a seat ·
+                            @Session.WithUnit(seats * Input(org)) a month in total.
+                            People in more than one organization get the largest of those budgets, unless an admin set theirs.
+                            Changes apply to this month straight away; transfers and adjustments are kept.
+                        </div>
+                        @if (Input(org) != org.DefaultMonthlyAllocation)
+                        {
+                            <SpendPreviewPanel Preview="_orgPreviews.GetValueOrDefault(org.Id)" />
+                        }
+                    </div>
+                </form>
+                }
+                else
+                {
+                    <p class="muted small">Monthly budget per member: <strong>@Session.WithUnit(org.DefaultMonthlyAllocation)</strong>. Budgets are set by admins and org owners.</p>
+                }
+
+                <div class="org-card-footer">
+                    <div class="small">
+                        @if (org.IsDemo)
+                        {
+                            <span class="muted">Demo organization, not synced with GitHub</span>
+                        }
+                        else if (org.LastSyncedUtc is null)
+                        {
+                            <span class="muted">Never synced</span>
+                        }
+                        else
+                        {
+                            <div class="row" style="gap:6px">
+                                @if (org.LastSyncFailed) { <span class="badge critical dot">Sync failed</span> }
+                                else { <span class="badge good dot">Synced</span> }
+                                <span class="muted">@Format.Relative(org.LastSyncedUtc)</span>
+                            </div>
+                            @if (!string.IsNullOrEmpty(org.LastSyncMessage))
+                            {
+                                <div class="muted" style="margin-top:4px">@org.LastSyncMessage</div>
+                            }
+                        }
+                    </div>
+                    <div class="row nowrap" style="gap:6px">
+                        @if (!org.IsDemo)
+                        {
+                            <button class="btn sm" disabled="@(_syncing.Contains(org.Id))" @onclick="() => SyncOrg(org)">
+                                @if (_syncing.Contains(org.Id)) { <span class="spinner"></span> } else { <Icon Name="sync" Size="15" /> }
+                                Sync
+                            </button>
+                        }
+                        @if (Session.CanManageIntegration)
+                        {
+                            @if (_confirmRemove == org.Id)
+                            {
+                                <button class="btn danger sm" @onclick="() => Remove(org)">Confirm remove</button>
+                                <button class="btn ghost sm" @onclick="() => _confirmRemove = null">Keep</button>
+                            }
+                            else
+                            {
+                                <button class="btn ghost sm" @onclick="() => _confirmRemove = org.Id" title="Stop tracking this organization">Remove</button>
+                            }
+                        }
+                    </div>
+                </div>
+            </section>
+        }
+
+        @if (Session.CanManageIntegration)
+        {
+            <section class="card org-card add">
+                <div class="card-header">
+                    <div>
+                        <h2>Add an organization</h2>
+                        <p>Organizations the GitHub token can see that aren't tracked yet.</p>
+                    </div>
+                    @if (Sync.CanSync)
+                    {
+                        <button class="btn ghost sm" type="button" disabled="@_loadingAvailable" @onclick="LoadAvailableAsync" title="Check GitHub again">
+                            @if (_loadingAvailable) { <span class="spinner"></span> } else { <Icon Name="sync" Size="15" /> }
+                            Refresh
+                        </button>
+                    }
+                </div>
+
+                @if (!Sync.CanSync)
+                {
+                    <div class="empty small">
+                        <strong>No GitHub token</strong>
+                        Set <code>GitHub:Token</code> (with <code>read:org</code> and <code>manage_billing:copilot</code>) and the
+                        organizations it can see will be listed here.
+                    </div>
+                }
+                else if (_loadingAvailable && _available is null)
+                {
+                    <div class="loading"><span class="spinner"></span> Looking up organizations…</div>
+                }
+                else if (_availableError is not null)
+                {
+                    <div class="alert critical"><span class="icon"><Icon Name="alert" /></span><span>@_availableError</span></div>
+                }
+                else if (_available is { Count: 0 })
+                {
+                    <div class="empty small"><strong>Nothing new to add</strong>Every organization the token can see is already tracked.</div>
+                }
+                else if (_available is not null)
+                {
+                    <ul class="org-pick">
+                        @foreach (var o in _available.OrderByDescending(o => o.CanAdd).ThenBy(o => o.Login, StringComparer.OrdinalIgnoreCase))
+                        {
+                            <li class="@(o.CanAdd ? "" : "disabled")">
+                                @if (!string.IsNullOrEmpty(o.AvatarUrl))
+                                {
+                                    <img class="org-avatar" src="@o.AvatarUrl" alt="" width="32" height="32" loading="lazy" />
+                                }
+                                else
+                                {
+                                    <span class="org-avatar">@o.Login[..1].ToUpperInvariant()</span>
+                                }
+                                <div class="org-pick-text">
+                                    <strong>@o.Login</strong>
+                                    <span class="muted small">
+                                        @if (o.CanAdd)
+                                        {
+                                            @($"Copilot {o.PlanType ?? ""} · {o.Seats ?? 0} {((o.Seats ?? 0) == 1 ? "seat" : "seats")}".Replace("  ", " "))
+                                        }
+                                        else
+                                        {
+                                            @o.Problem
+                                        }
+                                    </span>
+                                </div>
+                                <button class="btn sm @(o.CanAdd ? "primary" : "")" type="button"
+                                        disabled="@(!o.CanAdd || _adding.Contains(o.Login))" @onclick="() => AddOrg(o.Login)">
+                                    @if (_adding.Contains(o.Login)) { <span class="spinner"></span> } else { <Icon Name="plus" Size="14" /> }
+                                    Add
+                                </button>
+                            </li>
+                        }
+                    </ul>
+                }
+            </section>
+        }
+    </div>
+
+    @if (_orgs.Count == 0 && !Session.IsAppAdmin)
+    {
+        <div class="card empty"><strong>No organizations to manage</strong></div>
+    }
+}
+
+@code {
+    private List<Organization> _orgs = [];
+    private Dictionary<int, int> _seatCounts = [];
+    private readonly Dictionary<int, decimal> _budgetInputs = [];
+    private readonly Dictionary<int, OpResult?> _cardResults = [];
+    private readonly HashSet<int> _syncing = [];
+    private List<AppUser> _people = [];
+    private List<AvailableOrganization>? _available;
+    private string? _availableError;
+    private bool _loadingAvailable;
+    private readonly HashSet<string> _adding = new(StringComparer.OrdinalIgnoreCase);
+    private int? _confirmRemove;
+
+    protected override async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var orgs = await db.Organizations.AsNoTracking().ToListAsync();
+        _orgs = orgs.Where(o => Session.CanManage(o.Id) || Session.CanManageIntegration)
+            .OrderBy(o => o.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var ids = _orgs.Select(o => o.Id).ToList();
+        _seatCounts = await db.Memberships
+            .Where(m => m.HasSeat && ids.Contains(m.OrganizationId))
+            .GroupBy(m => m.OrganizationId)
+            .Select(g => new { g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.Key, x => x.Count);
+
+        if (Session.IsAppAdmin)
+        {
+            _people = await Budgets.GetPeopleAsync();
+        }
+
+        if (!_rulesLoaded)
+        {
+            _rulesLoaded = true;
+            _requireApproval = Session.Settings.RequireTransferApproval;
+            _threshold = Session.Settings.ApprovalThreshold;
+            _minimumKeep = Session.Settings.MinimumKeep;
+        }
+        _pendingProposals = await db.Proposals.CountAsync(p => p.Status == ProposalStatus.Pending);
+        _needReconcile = await db.GitHubBudgets.CountAsync(l => l.State == GitHubBudgetState.ReconciliationRequired);
+
+        // Keep unsaved edits; fill in saved values for anything else.
+        foreach (var org in _orgs) _budgetInputs.TryAdd(org.Id, org.DefaultMonthlyAllocation);
+    }
+
+    private decimal Input(Organization org) => _budgetInputs.GetValueOrDefault(org.Id, org.DefaultMonthlyAllocation);
+
+    private readonly Dictionary<int, SpendPreview?> _orgPreviews = [];
+
+    private async Task SetInput(int orgId, ChangeEventArgs e)
+    {
+        if (!decimal.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var value)) return;
+        _budgetInputs[orgId] = value;
+        var (_, preview) = await Changes.PreviewAsync(Session.User!.Id, new BudgetChange(BudgetChangeKind.OrganizationBudget, OrganizationId: orgId, Value: value));
+        _orgPreviews[orgId] = preview;
+    }
+
+    private async Task SaveBudget(Organization org)
+    {
+        if (!Session.CanManage(org.Id)) return;
+        var result = await Changes.SubmitAsync(Session.User!.Id, new BudgetChange(BudgetChangeKind.OrganizationBudget, OrganizationId: org.Id, Value: Input(org)));
+        _cardResults[org.Id] = result;
+        if (result.Ok) { _budgetInputs.Remove(org.Id); _orgPreviews.Remove(org.Id); }
+        await ReloadAsync();
+    }
+
+    private async Task SyncOrg(Organization org)
+    {
+        if (!Session.CanManage(org.Id) && !Session.CanManageIntegration) return;
+        _syncing.Add(org.Id);
+        try
+        {
+            _cardResults[org.Id] = await Sync.SyncAsync(org.Id, actorUserId: Session.User!.Id);
+            await Session.RefreshAsync();
+            await ReloadAsync();
+        }
+        finally { _syncing.Remove(org.Id); }
+    }
+
+
+
+
+
+
+    private bool _requireApproval;
+    private decimal? _threshold;
+    private decimal _minimumKeep;
+    private bool _rulesLoaded;
+    private int _pendingProposals;
+    private int _needReconcile;
+
+    private async Task SaveTransferRules()
+    {
+        Result = await Budgets.SetTransferRulesAsync(Session.User!.Id, _requireApproval, _threshold, _minimumKeep);
+        await Session.RefreshAsync();
+        await ReloadAsync();
+    }
+
+    private async Task SetBudgetAuthority(bool required)
+    {
+        Result = await Budgets.SetBudgetAuthorityRequiredAsync(Session.User!.Id, required);
+        await Session.RefreshAsync();
+        await ReloadAsync();
+    }
+
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        // Only app admins can add orgs. Looked up once per visit (and on Refresh), not on every data change.
+        if (Session.CanManageIntegration && Sync.CanSync) await LoadAvailableAsync();
+    }
+
+    private async Task LoadAvailableAsync()
+    {
+        if (_loadingAvailable) return;
+        _loadingAvailable = true;
+        _availableError = null;
+        StateHasChanged();
+        try
+        {
+            _available = await Sync.GetAvailableOrganizationsAsync();
+        }
+        catch (Exception ex) when (ex is GitHubApiException or HttpRequestException or TaskCanceledException)
+        {
+            _availableError = "Couldn't list the token's organizations. " + ex.Message;
+        }
+        finally
+        {
+            _loadingAvailable = false;
+        }
+    }
+
+    private async Task AddOrg(string login)
+    {
+        if (!Session.CanManageIntegration || !_adding.Add(login)) return;
+        try
+        {
+            var result = await Sync.AddOrganizationAsync(Session.User!.Id, login);
+            Result = result;
+            if (result.Ok || result.Message.StartsWith("Added")) _available?.RemoveAll(o => string.Equals(o.Login, login, StringComparison.OrdinalIgnoreCase));
+            await Session.RefreshAsync();
+            await ReloadAsync();
+        }
+        finally { _adding.Remove(login); }
+    }
+
+    private async Task Remove(Organization org)
+    {
+        _confirmRemove = null;
+        if (!Session.CanManageIntegration) return;
+        var result = await Sync.RemoveOrganizationAsync(Session.User!.Id, org.Id);
+        Result = result;
+        _budgetInputs.Remove(org.Id);
+        _cardResults.Remove(org.Id);
+        await Session.RefreshAsync();
+        await ReloadAsync();
+        // The removed org can be added again, so it belongs back in the list.
+        if (Sync.CanSync) await LoadAvailableAsync();
+    }
+}

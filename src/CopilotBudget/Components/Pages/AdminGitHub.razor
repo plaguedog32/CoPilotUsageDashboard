@@ -1,0 +1,228 @@
+@page "/admin/github"
+@inject GitHubWriteBackService WriteBack
+@inject BudgetChangeService Changes
+@inject LiveStatus Live
+
+<PageTitle>GitHub budget sync · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.CanManageIntegration && !Session.CanViewAudit)
+{
+    <div class="card empty"><strong>Admins, integration admins and auditors only</strong></div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>GitHub budget sync</h1>
+            <p>Each person's budget here becomes their user-level budget in GitHub: a hard stop, in whole dollars (1 credit = @Format.Dollars(Session.DollarsPerCredit)).
+                The app reads GitHub before every write, writes only over values it set itself, and reads back afterwards to check.</p>
+        </div>
+        <a class="btn ghost sm" href="admin">Back to admin</a>
+    </div>
+
+    <ResultAlert @bind-Result="Result" />
+
+    <div class="grid grid-main mb">
+        <section class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Write to GitHub</h2>
+                    <p>@WriteBack.Store.Description</p>
+                </div>
+                @if (WriteBack.Store.IsSimulated) { <span class="badge warning">Simulated</span> }
+            </div>
+            @if (!WriteBack.Store.IsAvailable)
+            {
+                <div class="alert warning"><span class="icon"><Icon Name="alert" /></span>
+                    <span>User-level budgets are a GitHub Enterprise Cloud feature. Set <code>GitHub:EnterpriseSlug</code> and an enterprise owner or billing manager token.</span></div>
+            }
+            else
+            {
+                <label class="switch lg">
+                    <input type="checkbox" checked="@Session.Settings.GitHubWriteBackEnabled" disabled="@(!Session.CanManageIntegration)" @onchange="e => SetWriteBack((bool)e.Value!)" />
+                    <span class="switch-track" aria-hidden="true"></span>
+                    <span class="switch-label">@(Session.Settings.GitHubWriteBackEnabled ? "Writing budgets to GitHub" : "Off: reading and comparing only")</span>
+                </label>
+                <p class="muted small mt">
+                    This is the off switch. Turn it off and nothing more is written; the app keeps reading GitHub and showing differences.
+                    Checks run every couple of minutes and a few seconds after any change in the app.
+                </p>
+                <div class="row mt">
+                    <button class="btn sm" disabled="@(_busy || !Session.CanManageIntegration)" @onclick="RunNow">
+                        @if (_busy) { <span class="spinner"></span> } else { <Icon Name="sync" Size="15" /> }
+                        Check now
+                    </button>
+                    <span class="muted small">Last checked @Format.Relative(Live.LastWriteBackUtc)@(Live.LastWriteBackProblem is null ? "" : " · " + Live.LastWriteBackProblem)</span>
+                </div>
+            }
+        </section>
+
+        <section class="card">
+            <div class="card-header"><h2>Status</h2></div>
+            <div class="state-grid">
+                @foreach (var (state, label, css) in States)
+                {
+                    <button type="button" class="state-tile @css @(_filter == state ? "active" : "")" @onclick="() => _filter = _filter == state ? null : state">
+                        <span class="value">@_links.Count(l => l.State == state)</span>
+                        <span class="label">@label</span>
+                    </button>
+                }
+            </div>
+        </section>
+    </div>
+
+    <section class="card mb">
+        <div class="card-header">
+            <div>
+                <h2>People@(_filter is null ? "" : " · " + States.First(s => s.State == _filter).Label)</h2>
+                <p>Reconciliation is needed when GitHub's budget isn't the value the app last wrote: someone changed it in GitHub,
+                    it existed before the app, or a write didn't stick. Nothing is written for that person until you decide.</p>
+            </div>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Person</th><th class="num">App budget</th><th class="num">Wants in GitHub</th><th class="num">GitHub has</th><th class="num">Last written</th><th>State</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var l in _links.Where(l => _filter is null || l.State == _filter).OrderBy(l => l.State != GitHubBudgetState.ReconciliationRequired).ThenBy(l => l.User.Login))
+                    {
+                        var budget = _budgets.GetValueOrDefault(l.UserId);
+                        <tr>
+                            <td><Person User="l.User" Size="24" ShowLogin="true" /></td>
+                            <td class="num">@(budget is null ? "–" : Session.WithUnit(budget.Allocated))</td>
+                            <td class="num">@D(l.DesiredDollars)</td>
+                            <td class="num @(l.GitHubDollars != l.DesiredDollars ? "amount-out" : "")">@D(l.GitHubDollars)</td>
+                            <td class="num secondary">@D(l.LastWrittenDollars) <div class="muted small">@(l.LastWrittenUtc is null ? "" : Format.Relative(l.LastWrittenUtc))</div></td>
+                            <td>
+                                @{ var s = States.First(x => x.State == l.State); }
+                                <span class="badge @s.Css dot">@s.Label</span>
+                                @if (!string.IsNullOrEmpty(l.Message)) { <div class="muted small" style="max-width:320px">@l.Message</div> }
+                            </td>
+                            <td>
+                                <div class="row-actions">
+                                @if (l.State == GitHubBudgetState.ReconciliationRequired && Session.CanManageIntegration)
+                                {
+                                    <button class="btn primary sm" disabled="@_busy" title="Overwrite GitHub with the app's value" @onclick="() => Run(() => WriteBack.UseAppValueAsync(Session.User!.Id, l.UserId))">Use app value</button>
+                                    @if (l.GitHubDollars is not null && Session.IsManager)
+                                    {
+                                        <button class="btn sm" disabled="@_busy" title="Change the app's budget to match GitHub" @onclick="() => AcceptGitHub(l)">Match GitHub</button>
+                                    }
+                                }
+                                @if (WriteBack.Store.IsSimulated && Session.CanManageIntegration)
+                                {
+                                    <button class="btn ghost sm" disabled="@_busy" title="Demo: pretend someone edited this budget in GitHub" @onclick="() => Run(() => WriteBack.SimulateOutsideChangeAsync(Session.User!.Id, l.UserId, (l.GitHubDollars ?? l.DesiredDollars ?? 10) + 5))">Simulate edit</button>
+                                }
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (_links.Count == 0)
+        {
+            <div class="empty"><strong>Not checked yet</strong>@(WriteBack.Store.IsAvailable ? "Press “Check now”." : "Connect a GitHub enterprise first.")</div>
+        }
+    </section>
+
+    <section class="card">
+        <div class="card-header">
+            <div>
+                <h2>Operation log</h2>
+                <p>Every read, write, check and decision about GitHub budgets. Rows from one update share a run ID.</p>
+            </div>
+        </div>
+        @if (_ops.Count == 0)
+        {
+            <div class="empty small"><strong>Nothing yet</strong></div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>When</th><th>Run</th><th>Person</th><th>Action</th><th class="num">Before</th><th class="num">After</th><th>Result</th></tr></thead>
+                    <tbody>
+                        @foreach (var o in _ops)
+                        {
+                            <tr>
+                                <td class="secondary small nowrap" title="@Format.Timestamp(o.CreatedUtc)">@Format.Relative(o.CreatedUtc)</td>
+                                <td class="mono small" title="@o.RunId">@o.RunId.ToString()[..8]</td>
+                                <td>@(o.User?.Login ?? "–")</td>
+                                <td>@o.Action</td>
+                                <td class="num">@D(o.Before)</td>
+                                <td class="num">@D(o.After)</td>
+                                <td class="small">
+                                    @if (o.Succeeded) { <span class="badge good dot">OK</span> } else { <span class="badge critical dot">Failed</span> }
+                                    <span class="secondary">@o.Message</span>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private static readonly (GitHubBudgetState State, string Label, string Css)[] States =
+    [
+        (GitHubBudgetState.ReconciliationRequired, "Reconciliation required", "warning"),
+        (GitHubBudgetState.Error, "Failed", "critical"),
+        (GitHubBudgetState.WritePaused, "Waiting (writing off)", "accent"),
+        (GitHubBudgetState.InSync, "In sync", "good"),
+        (GitHubBudgetState.Unknown, "Not checked", "neutral"),
+    ];
+
+    private List<GitHubBudgetLink> _links = [];
+    private List<GitHubOperation> _ops = [];
+    private Dictionary<int, MemberBudget> _budgets = [];
+    private GitHubBudgetState? _filter;
+    private bool _busy;
+
+    protected override async Task LoadAsync()
+    {
+        _links = await WriteBack.GetLinksAsync();
+        _ops = await WriteBack.GetOperationsAsync(80);
+        _budgets = (await Budgets.GetBudgetsAsync(Period.Current)).ToDictionary(b => b.User.Id);
+    }
+
+    private static string D(int? dollars) => dollars is int d ? $"${d:#,0}" : "–";
+
+    private async Task SetWriteBack(bool enabled)
+    {
+        Result = await Budgets.SetWriteBackAsync(Session.User!.Id, enabled);
+        await Session.RefreshAsync();
+        if (enabled) await WriteBack.RunAsync(Session.User!.Id);
+        await ReloadAsync();
+    }
+
+    private Task RunNow() => Run(async () =>
+    {
+        var run = await WriteBack.RunAsync(Session.User!.Id);
+        return run.Problem is null ? OpResult.Success(run.Describe()) : OpResult.Fail(run.Problem);
+    });
+
+    /// <summary>GitHub is right: change the app's budget this month to match, through the normal approval flow.</summary>
+    private Task AcceptGitHub(GitHubBudgetLink link) => Run(async () =>
+    {
+        if (await WriteBack.AdjustmentToMatchGitHubAsync(link.UserId) is not { } adjust)
+            return OpResult.Fail("GitHub has no budget for this person to match.");
+        if (adjust.Credits == 0) return OpResult.Success("Already matches.");
+        var result = await Changes.SubmitAsync(Session.User!.Id, new BudgetChange(BudgetChangeKind.Adjustment, UserId: link.UserId,
+            Value: Math.Round(adjust.Credits), Note: $"Matched to the ${link.GitHubDollars} budget set in GitHub"));
+        if (result.Ok) await WriteBack.RunAsync(Session.User!.Id);
+        return result;
+    });
+
+    private async Task Run(Func<Task<OpResult>> action)
+    {
+        if (_busy) return;
+        _busy = true;
+        try { await ShowAsync(await action()); }
+        finally { _busy = false; }
+    }
+}

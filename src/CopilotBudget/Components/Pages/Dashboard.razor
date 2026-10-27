@@ -1,0 +1,339 @@
+@page "/"
+@inject PoolService Pools
+@inject ExpiryWatch Expiry
+
+<PageTitle>Dashboard · Copilot Budget</PageTitle>
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else if (!Session.InUserbase)
+{
+    <NoOrgNotice />
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Hi, @Session.FirstName</h1>
+        </div>
+    </div>
+
+    @* Company totals are for people who run or oversee budgets; everyone else sees their own budget. *@
+    @if (SeesCompanyTotals)
+    {
+    <div class="grid grid-4">
+        <div class="stat">
+            <div class="label">People with seats</div>
+            <div class="value">@_summary.People.ToString("#,0")</div>
+            <div class="sub">company-wide</div>
+        </div>
+        <div class="stat">
+            <div class="label">Allocated</div>
+            <div class="value">@Session.Amt(_summary.Allocated)</div>
+            <div class="sub">@(Session.ShowDollars ? "budget" : Session.UnitLabel) this month</div>
+        </div>
+        <div class="stat">
+            <div class="label">Used</div>
+            <div class="value">@Session.Amt(_summary.Used)</div>
+            <div class="sub">@Format.Percent(_summary.PercentUsed) of allocated</div>
+        </div>
+        <div class="stat">
+            <div class="label">Expected to expire</div>
+            <div class="value">@Session.Amt(_forecast.Unused)</div>
+            <div class="sub">@Format.Percent(_forecast.UnusedPercent) of the budget goes unused at the reset if usage keeps this pace</div>
+        </div>
+    </div>
+    }
+
+    @if (_expiry is { NeedsAttention: true } x)
+    {
+        <div class="alert warning mt expiry-banner" role="status">
+            <span class="icon"><Icon Name="alert" /></span>
+            <div class="expiry-body">
+                @if (x.InWarningWindow && x.Unused >= 1)
+                {
+                    <div>
+                        <strong>@Session.WithUnit(x.Unused) will expire unused</strong> when budgets reset in @Pace.Countdown(x.UntilReset)
+                        (@Format.Dollars(x.Unused * Session.DollarsPerCredit)).
+                        @if (x.RunningOut.Count > 0)
+                        {
+                            <text> @x.RunningOut.Count @(x.RunningOut.Count == 1 ? "person is" : "people are") on track to run out first and could use about @Session.WithUnit(x.Shortfall) of them.</text>
+                        }
+                    </div>
+                    @if (x.Idle.Count > 0)
+                    {
+                        <div class="muted small">Most unused: @string.Join(", ", x.Idle.Select(i => $"{i.User.Login} ({Session.Amt(i.Credits)})"))</div>
+                    }
+                }
+                @if (x.DepartedCredits >= 1)
+                {
+                    <div>
+                        <strong>@Session.WithUnit(x.DepartedCredits) are held by people who left</strong>
+                        (@string.Join(", ", x.Departed.Select(d => d.User.Login))). Nobody can use them until they're reassigned.
+                    </div>
+                }
+            </div>
+            <div class="row nowrap" style="gap:6px">
+                @if (x.InWarningWindow && x.Unused >= 1 && Session.IsAppAdmin)
+                {
+                    <a class="btn sm" href="members">Move credits</a>
+                }
+                @if (x.DepartedCredits >= 1 && Session.IsAppAdmin)
+                {
+                    <a class="btn sm" href="admin/people">Reassign</a>
+                }
+            </div>
+        </div>
+    }
+
+    <ResultAlert @bind-Result="Result" />
+
+    <div class="grid grid-main @(SeesCompanyTotals ? "mt" : "")">
+        <div class="stack">
+            @if (_mine is not null)
+            {
+                <section class="card">
+                    <div class="hero">
+                        <div>
+                            <div class="label">Your available budget</div>
+                            <div class="figure">@Session.Amt(Math.Max(0, _mine.Available))<small>@Session.Unit</small></div>
+                        </div>
+                        <BudgetStatus Budget="_mine" />
+                    </div>
+                    <div class="mt">
+                        <Meter Value="_mine.Used" Max="_mine.Allocated" Large="true" Label="Your usage this month" />
+                    </div>
+                    <div class="breakdown">
+                        <span>Used <strong>@Session.Amt(_mine.Used)</strong> of <strong>@Session.Amt(_mine.Allocated)</strong> (@Format.Percent(_mine.PercentUsed))</span>
+                        <span>Monthly budget <strong>@Session.Amt(_mine.MonthlyBudget)</strong></span>
+                        @if (_mine.Allocated != _mine.MonthlyBudget)
+                        {
+                            <span>Net from transfers <strong>@Session.Signed(_mine.Allocated - _mine.MonthlyBudget)</strong></span>
+                        }
+                        @if (_poolCredits > 0)
+                        {
+                            <span><a href="pools">Credit pools</a> you can use <strong>@Session.Amt(_poolCredits)</strong></span>
+                        }
+                        @if (_mine.Available < 0)
+                        {
+                            <span><strong>@Session.Amt(-_mine.Available)</strong> over budget</span>
+                        }
+                    </div>
+                </section>
+            }
+            else
+            {
+                @if (Session.IsAdminOnly)
+                {
+                    <div class="alert">
+                        <span class="icon"><Icon Name="info" /></span>
+                        <span>You don't have a Copilot seat, so there's no budget of your own. Everything you look after is under
+                            <strong>Manage</strong> in the sidebar.</span>
+                    </div>
+                }
+                else
+                {
+                    <div class="alert warning">
+                        <span class="icon"><Icon Name="info" /></span>
+                        <span>You don't have a Copilot seat, so you can look around but not send or request credits.</span>
+                    </div>
+                }
+            }
+
+            @if (SeesCompanyTotals)
+            {
+            <section class="card">
+                <div class="card-header">
+                    <div>
+                        <h2>Month-end forecast</h2>
+                        <p>Company-wide, if usage carries on at this month's pace until the reset in @Pace.Countdown(Pace.UntilReset()).</p>
+                    </div>
+                </div>
+                <CreditBar Used="_forecast.Used" Allocated="_forecast.Allocated" Title="Company-wide" />
+                <div class="forecast-grid mt">
+                    <div>
+                        <div class="label">Pace difference</div>
+                        <div class="value @(_forecast.PaceDifference > 0 ? "amount-out" : "amount-in")">@Session.Signed(Math.Round(_forecast.PaceDifference))</div>
+                        <div class="sub">@(_forecast.PaceDifference > 0 ? "ahead of" : "behind") an even spend (@Session.Amt(Math.Round(_forecast.Expected)) expected by now)</div>
+                    </div>
+                    <div>
+                        <div class="label">Projected use by the reset</div>
+                        <div class="value">@Session.Amt(_forecast.ProjectedUse)</div>
+                        <div class="sub">of @Session.WithUnit(_forecast.Allocated), with GitHub stopping people at their budgets</div>
+                    </div>
+                    <div>
+                        <div class="label">Will expire unused</div>
+                        <div class="value">@Session.Amt(_forecast.Unused)</div>
+                        <div class="sub">@Format.Dollars(_forecast.Unused * Session.DollarsPerCredit) · could be sent to people about to run out</div>
+                    </div>
+                    <div>
+                        <div class="label">Demand beyond budgets</div>
+                        <div class="value">@Session.Amt(_forecast.Shortfall)</div>
+                        <div class="sub">what people running out would use if they could, across @_forecast.RunningOut.Count() @(_forecast.RunningOut.Count() == 1 ? "person" : "people")</div>
+                    </div>
+                </div>
+            </section>
+            }
+
+            <section class="card">
+                <div class="card-header">
+                    <div>
+                        <h2>Credit requests</h2>
+                    </div>
+                    <a class="btn ghost sm" href="requests">All requests</a>
+                </div>
+                @if (_openRequests.Count == 0)
+                {
+                    <div class="empty"><Icon Name="check" Size="28" /><strong>No open requests</strong>Nobody is asking for credits right now.</div>
+                }
+                else
+                {
+                    <div class="feed">
+                        @foreach (var r in _openRequests.Take(8))
+                        {
+                            var theirs = _budgetsById.GetValueOrDefault(r.RequesterId);
+                            <div class="feed-item">
+                                <Avatar User="r.Requester" Size="28" />
+                                <div class="text">
+                                    <strong>@r.Requester.Login</strong> asked @if (r.TargetId == Session.User!.Id) { <span class="you">You</span> } else { @(r.Target is { } t ? t.Login : "anyone") } for
+                                    <strong>@Session.WithUnit(r.Amount)</strong>
+                                    @if (r.TargetId == Session.User!.Id) { <span class="badge accent">To you</span> }
+                                    <div class="muted small">
+                                        @r.Reason
+                                        @if (theirs is not null) { <text> · @Session.Amt(Math.Max(0, theirs.Available)) left</text> }
+                                    </div>
+                                </div>
+                                <span class="when">@Format.Relative(r.CreatedUtc)</span>
+                                @if (CanFill(r))
+                                {
+                                    <button class="btn primary sm" @onclick="() => _filling = r"><Icon Name="send" Size="14" /> Fill…</button>
+                                }
+                            </div>
+                        }
+                    </div>
+                    @if (_openRequests.Count > 8)
+                    {
+                        <p class="muted small mt"><a href="requests">@(_openRequests.Count - 8) more</a></p>
+                    }
+                }
+            </section>
+        </div>
+
+        <div class="stack">
+            <section class="card">
+                <div class="card-header">
+                    <h2>Recent activity</h2>
+                    <a class="btn ghost sm" href="history">History</a>
+                </div>
+                @if (_activity.Count == 0)
+                {
+                    <div class="empty"><strong>Nothing yet</strong>Credits you send or get, and changes to your budget, will show up here.</div>
+                }
+                else
+                {
+                    <div class="feed">
+                        @foreach (var e in _activity)
+                        {
+                            <div class="feed-item">
+                                <Avatar User="e.User" Size="28" />
+                                <div class="text">
+                                    @if (e.Type == LedgerEntryType.TransferIn)
+                                    {
+                                        <strong><Who User="e.Counterparty" /></strong> <text>sent</text> <strong><Who User="e.User" /></strong>
+                                        <span class="amount-in">@Session.Amt(e.Amount)</span>
+                                    }
+                                    else
+                                    {
+                                        <strong><Who User="e.CreatedBy" Fallback="An admin" /></strong> <text>adjusted</text> <strong><Who User="e.User" /></strong>
+                                        <span class="@(e.Amount >= 0 ? "amount-in" : "amount-out")">@Session.Signed(e.Amount)</span>
+                                    }
+                                    @if (!string.IsNullOrEmpty(e.Note))
+                                    {
+                                        <div class="muted small">@e.Note</div>
+                                    }
+                                </div>
+                                <span class="when">@Format.Relative(e.CreatedUtc)</span>
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+
+            @if (Session.ShowsOrganizations)
+            {
+            <section class="card small">
+                <div class="card-header"><h2>GitHub organizations</h2></div>
+                <div class="org-status">
+                    @foreach (var o in Session.Organizations)
+                    {
+                        <div class="row">
+                            <Icon Name="sync" Size="15" />
+                            <strong>@o.Name</strong>
+                            <span class="muted">
+                                @(o.IsDemo ? "Demo, not connected to GitHub" : o.LastSyncedUtc is null ? "Not synced yet" : "Synced " + Format.Relative(o.LastSyncedUtc))
+                            </span>
+                            @if (o.LastSyncFailed) { <span class="badge critical dot">Sync failed</span> }
+                        </div>
+                    }
+                </div>
+            </section>
+            }
+        </div>
+    </div>
+
+    @if (_filling is not null)
+    {
+        <FillRequestDialog Request="_filling" OnClose="() => _filling = null" OnFilled="Filled" />
+    }
+}
+
+@code {
+    private MemberBudget? _mine;
+    private BudgetSummary _summary = new(0, 0, 0, 0, 0);
+    private List<BudgetRequest> _openRequests = [];
+    private Dictionary<int, MemberBudget> _budgetsById = [];
+    private BudgetRequest? _filling;
+    private List<LedgerEntry> _activity = [];
+    private decimal _poolCredits;
+    private ForecastSummary _forecast = Forecast.Summarize([]);
+    private ExpiryOutlook? _expiry;
+
+    /// <summary>Admins, org owners, budget authorities, budget visibility and auditors.</summary>
+    private bool SeesCompanyTotals => Session.SeesCompanyTotals;
+
+    protected override async Task LoadAsync()
+    {
+        var me = Session.User!;
+        var budgets = await Budgets.GetBudgetsAsync(Period.Current);
+        var pending = await Budgets.GetRequestsAsync(RequestStatus.Pending);
+
+        _mine = budgets.FirstOrDefault(b => b.User.Id == me.Id && b.HasSeat);
+        _summary = BudgetService.Summarize(budgets, pending.Count);
+        _forecast = Forecast.Summarize(budgets);
+        _expiry = SeesCompanyTotals ? await Expiry.GetAsync() : null;
+        _budgetsById = budgets.ToDictionary(b => b.User.Id);
+        // Requests from other people, whoever has the least of their budget left first: ones you can fill if you have a seat, or all of them if you
+        // look after requests without a seat of your own.
+        _openRequests = pending
+            .Where(r => r.RequesterId != me.Id && !r.Requester.IsDisabled)
+            .Where(r => _mine is null ? Session.IsManager : r.TargetId is null || r.TargetId == me.Id)
+            .OrderBy(r => _budgetsById.GetValueOrDefault(r.RequesterId) is { Allocated: > 0 } b ? (double)(b.Available / b.Allocated) : double.MaxValue)
+            .ThenBy(r => r.CreatedUtc)
+            .ToList();
+        _poolCredits = (await Pools.GetPoolsAsync()).Where(p => p.HasMember(me.Id)).Sum(p => Math.Max(0, p.Balance));
+        // Only what you're part of: credits you sent or got, and changes to your budget (or ones you made).
+        _activity = (await Budgets.GetHistoryAsync(take: 40, involving: me.Id))
+            .Where(e => e.Type is LedgerEntryType.TransferIn or LedgerEntryType.AdminAdjustment)
+            .Take(6).ToList();
+    }
+
+    private bool CanFill(BudgetRequest r) => _mine is not null && (r.TargetId is null || r.TargetId == Session.User!.Id);
+
+    private async Task Filled(OpResult result)
+    {
+        _filling = null;
+        await ShowAsync(result);
+    }
+}

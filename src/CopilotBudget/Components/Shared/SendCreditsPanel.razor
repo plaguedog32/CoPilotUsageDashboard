@@ -1,0 +1,161 @@
+@* Sending credits to someone: the "Send credits" tab on the Requests page. *@
+@inherits PageBase
+
+@if (Loading)
+{
+    <div class="loading"><span class="spinner"></span> Loading…</div>
+}
+else
+{
+    <ResultAlert @bind-Result="Result" />
+
+    @if (_mine is null)
+    {
+        <div class="alert warning">
+            <span class="icon"><Icon Name="info" /></span>
+            <span>You don't have a Copilot seat, so there are no credits to send.</span>
+        </div>
+    }
+    else
+    {
+        var to = _others.FirstOrDefault(b => b.User.Id == _toId);
+        <div class="stack">
+            <section class="card">
+                <div class="hero">
+                    <div>
+                        <div class="label">Available to send</div>
+                        <div class="figure">@Session.Amt(Sendable)<small>@Session.Unit</small></div>
+                    </div>
+                </div>
+                <div class="mt"><Meter Value="_mine.Used" Max="_mine.Allocated" Large="true" Label="Your usage" /></div>
+                <div class="breakdown">
+                    <span>Used <strong>@Session.Amt(_mine.Used)</strong></span>
+                    <span>Budget <strong>@Session.Amt(_mine.Allocated)</strong></span>
+                    @if (_mine.Held > 0) { <span>Waiting for approval <strong>@Session.Amt(_mine.Held)</strong></span> }
+                </div>
+                @if (Session.ApprovalRequired)
+                {
+                    <p class="muted small mt">
+                        @(Session.Settings.ApprovalThreshold is { } t
+                            ? $"Transfers of {Session.WithUnit(t)} or more need an approver."
+                            : "Every transfer needs an approver before the credits move.")
+                    </p>
+                }
+            </section>
+
+            <section class="card">
+                <form @onsubmit="Submit">
+                    <div class="field">
+                        <label id="send-to-label">Send to</label>
+                        <input type="search" class="mb-sm" placeholder="Filter by name" @bind="_filter" @bind:event="oninput" aria-label="Filter people by name" />
+                        <div class="pick-list" role="radiogroup" aria-labelledby="send-to-label">
+                            @for (var i = 0; i < _others.Count; i++)
+                            {
+                                var b = _others[i];
+                                if (!Matches(b)) continue;
+                                // Colours come from the whole list, so they don't shift while filtering.
+                                var color = GradientColor(i, _others.Count);
+                                var selected = b.User.Id == _toId;
+                                <button type="button" role="radio" aria-checked="@(selected ? "true" : "false")"
+                                        class="pick @(selected ? "selected" : "")" style="--pick-color:@color"
+                                        @onclick="() => _toId = b.User.Id">
+                                    <span class="pick-who">
+                                        <Person User="b.User" Size="26" ShowLogin="true" />
+                                        @if (Session.ShowsOrganizations)
+                                        {
+                                            <span class="pick-orgs">@string.Join(", ", b.Organizations.Select(o => o.Name))</span>
+                                        }
+                                    </span>
+                                    <span class="pick-amount">
+                                        @(b.Available < 0 ? "over by " + Session.Amt(-b.Available) : Session.Amt(b.Available) + " left")
+                                    </span>
+                                </button>
+                            }
+                            @if (!_others.Any(Matches))
+                            {
+                                <div class="muted small">Nobody matches “@_filter”.</div>
+                            }
+                        </div>
+                        <div class="hint">Sorted from least left (red) to most left (green).</div>
+                    </div>
+                    <div class="field">
+                        <label for="send-amount">Amount (credits) <span class="muted">@Session.DollarHint(_amount)</span></label>
+                        <input id="send-amount" type="number" min="1" step="1" max="@Sendable" @bind="_amount" @bind:event="oninput" />
+                        <AmountSlider @bind-Value="_amount" Max="Sendable" Label="Amount to send" />
+                        @if (Session.Settings.MinimumKeep > 0)
+                        {
+                            <div class="hint">You have to keep at least @Session.WithUnit(Session.Settings.MinimumKeep) for yourself.</div>
+                        }
+                    </div>
+                    @if (to is not null)
+                    {
+                        <TransferBalances SenderName="You" Sender="Session.User" SenderBefore="_mine.Available"
+                                          RecipientName="@to.User.Login" Recipient="to.User" RecipientBefore="to.Available" Amount="_amount" />
+                    }
+                    <button class="btn primary block mt" type="submit" disabled="@(_busy || _toId == 0 || _amount <= 0 || _amount > Sendable)">
+                        <Icon Name="send" Size="16" /> @(NeedsApproval ? "Send for approval:" : "Send") @Session.WithUnit(_amount)@(to is null ? "" : " to " + to.User.Login)
+                    </button>
+                </form>
+            </section>
+        </div>
+    }
+}
+
+@code {
+    /// <summary>GitHub login to preselect, e.g. from an old /send?to= link.</summary>
+    [Parameter] public string? ToLogin { get; set; }
+
+    private MemberBudget? _mine;
+    private List<MemberBudget> _others = [];
+    private int _toId;
+    private decimal _amount = 25;
+    private bool _busy;
+    private bool _appliedQuery;
+    private string _filter = "";
+
+    /// <summary>Matches the filter text against the full name or GitHub login.</summary>
+    private bool Matches(MemberBudget b) =>
+        string.IsNullOrWhiteSpace(_filter)
+        || (b.User.Name?.Contains(_filter.Trim(), StringComparison.OrdinalIgnoreCase) ?? false)
+        || b.User.Login.Contains(_filter.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private bool NeedsApproval => Session.ApprovalRequired && (Session.Settings.ApprovalThreshold is not { } t || _amount >= t);
+
+    private decimal Sendable => _mine is null ? 0 : BudgetService.SendableFrom(_mine.Available, Session.Settings);
+
+    protected override async Task LoadAsync()
+    {
+        var myId = Session.User!.Id;
+        var budgets = await Budgets.GetBudgetsAsync(Period.Current);
+        _mine = budgets.FirstOrDefault(b => b.User.Id == myId && b.HasSeat);
+        _others = budgets.Where(b => b.User.Id != myId && b.HasSeat && !b.User.IsDisabled)
+            .OrderBy(b => b.Available).ThenBy(b => b.User.Login, StringComparer.OrdinalIgnoreCase).ToList();
+
+        if (!_appliedQuery && ToLogin is not null)
+        {
+            _appliedQuery = true;
+            _toId = _others.FirstOrDefault(b => string.Equals(b.User.Login, ToLogin, StringComparison.OrdinalIgnoreCase))?.User.Id ?? 0;
+        }
+    }
+
+    private async Task Submit()
+    {
+        if (_busy || _toId == 0) return;
+        _busy = true;
+        try
+        {
+            await ShowAsync(await Budgets.SendAsync(Session.User!.Id, _toId, _amount, null));
+        }
+        finally { _busy = false; }
+    }
+
+    // Red -> yellow -> green across the sorted list (least left first).
+    private static string GradientColor(int index, int count)
+    {
+        var t = count <= 1 ? 1.0 : index / (double)(count - 1);
+        (int R, int G, int B) red = (0xd0, 0x3b, 0x3b), yellow = (0xfa, 0xb2, 0x19), green = (0x0c, 0xa3, 0x0c);
+        var (a, b, u) = t < 0.5 ? (red, yellow, t * 2) : (yellow, green, (t - 0.5) * 2);
+        int Mix(int x, int y) => (int)Math.Round(x + (y - x) * u);
+        return $"#{Mix(a.R, b.R):x2}{Mix(a.G, b.G):x2}{Mix(a.B, b.B):x2}";
+    }
+}

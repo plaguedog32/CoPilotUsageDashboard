@@ -1,0 +1,120 @@
+@inject UserSession Session
+@* Multi-series line chart over months. Hover or focus a month for every series' value at once. *@
+@{
+    var n = Labels.Count;
+    var max = Series.SelectMany(s => s.Values).Where(v => v is not null).Select(v => v!.Value).DefaultIfEmpty(0).Max();
+    var (axisMax, step) = ChartScale.NiceAxis(max);
+    double X(int i) => PadLeft + PlotWidth * (i + 0.5) / n;
+    double Y(decimal v) => PadTop + PlotHeight * (1 - (double)(v / axisMax));
+
+    // Direct end labels only when they won't collide; otherwise the legend and tooltip carry identity.
+    var ends = Series.Select(s => (s, last: LastIndex(s.Values))).Where(e => e.last >= 0)
+        .Select(e => (e.s, x: X(e.last), y: Y(e.s.Values[e.last]!.Value))).OrderBy(e => e.y).ToList();
+    var labelEnds = ends.Count is > 0 and <= 4 && ends.Zip(ends.Skip(1)).All(p => p.Second.y - p.First.y >= 14);
+}
+<div class="chart">
+    @if (Series.Count > 1)
+    {
+        <div class="chart-legend">
+            @foreach (var s in Series)
+            {
+                <span><i class="key-line" style="background:@s.Color"></i>@s.Name</span>
+            }
+        </div>
+    }
+    <div class="chart-plot">
+        <svg viewBox="0 0 @Width @Height" role="img" aria-label="@AriaLabel">
+            @for (var t = 0m; t <= axisMax; t += step)
+            {
+                var y = Y(t);
+                <line x1="@PadLeft" x2="@(PadLeft + PlotWidth)" y1="@F(y)" y2="@F(y)" class="grid" />
+                <g><text x="@(PadLeft - 8)" y="@F(y + 4)" class="tick" text-anchor="end">@Session.Compact(t)</text></g>
+            }
+            @for (var i = 0; i < n; i++)
+            {
+                if ((n - 1 - i) % LabelEvery(n) != 0) continue;
+                <g><text x="@F(X(i))" y="@(Height - 8)" class="tick" text-anchor="middle">@Labels[i]</text></g>
+            }
+            @foreach (var s in Series)
+            {
+                foreach (var segment in Segments(s.Values))
+                {
+                    if (segment.Count == 1)
+                    {
+                        <circle cx="@F(X(segment[0]))" cy="@F(Y(s.Values[segment[0]]!.Value))" r="3" fill="@s.Color" />
+                        continue;
+                    }
+                    <path d="@string.Join(" ", segment.Select((i, k) => $"{(k == 0 ? "M" : "L")}{F(X(i))},{F(Y(s.Values[i]!.Value))}"))"
+                          fill="none" stroke="@s.Color" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+                }
+            }
+            @foreach (var e in ends)
+            {
+                <circle cx="@F(e.x)" cy="@F(e.y)" r="4" fill="@e.s.Color" stroke="var(--surface-1)" stroke-width="2" />
+                @if (labelEnds)
+                {
+                    <g><text x="@F(e.x + 10)" y="@F(e.y + 4)" class="end-label">@e.s.Name</text></g>
+                }
+            }
+        </svg>
+        <div class="chart-hover" style="@OverlayStyle">
+            @for (var i = 0; i < n; i++)
+            {
+                var index = i;
+                var rows = Series.Select(s => (s, v: s.Values[index])).Where(r => r.v is not null).OrderByDescending(r => r.v).ToList();
+                <div class="col @(i >= n / 2 ? "right" : "")" tabindex="0" aria-label="@Labels[i]">
+                    <div class="tip" role="tooltip">
+                        <div class="tip-title">@(TooltipLabels?[i] ?? Labels[i])</div>
+                        @if (rows.Count == 0) { <div class="muted">No data</div> }
+                        @foreach (var (s, v) in rows)
+                        {
+                            <div class="tip-row"><i class="key-line" style="background:@s.Color"></i><strong>@Session.Amt(v!.Value)</strong><span>@s.Name</span></div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    [Parameter, EditorRequired] public IReadOnlyList<string> Labels { get; set; } = [];
+    [Parameter] public IReadOnlyList<string>? TooltipLabels { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<ChartSeries> Series { get; set; } = [];
+    [Parameter] public string AriaLabel { get; set; } = "Line chart";
+
+    private const int Width = 480, Height = 250, PadLeft = 40, PadRight = 100, PadTop = 12, PadBottom = 26;
+    private const int PlotWidth = Width - PadLeft - PadRight, PlotHeight = Height - PadTop - PadBottom;
+
+    private static string OverlayStyle =>
+        $"left:{100.0 * PadLeft / Width:0.###}%;right:{100.0 * PadRight / Width:0.###}%;" +
+        $"top:{100.0 * PadTop / Height:0.###}%;bottom:{100.0 * PadBottom / Height:0.###}%";
+
+    /// <summary>Label every month up to 7, then every 2nd, 3rd, ... counting back from the latest month.</summary>
+    private static int LabelEvery(int n) => Math.Max(1, (int)Math.Ceiling(n / 7.0));
+
+    private static string F(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static int LastIndex(IReadOnlyList<decimal?> values)
+    {
+        for (var i = values.Count - 1; i >= 0; i--) if (values[i] is not null) return i;
+        return -1;
+    }
+
+    /// <summary>Runs of consecutive months with data, so missing months leave a gap instead of a fake zero.</summary>
+    private static List<List<int>> Segments(IReadOnlyList<decimal?> values)
+    {
+        var result = new List<List<int>>();
+        List<int>? current = null;
+        for (var i = 0; i < values.Count; i++)
+        {
+            if (values[i] is null) { current = null; continue; }
+            if (current is null) result.Add(current = []);
+            current.Add(i);
+        }
+        return result;
+    }
+}

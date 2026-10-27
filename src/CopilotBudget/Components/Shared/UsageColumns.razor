@@ -1,0 +1,97 @@
+@inject UserSession Session
+@* One person's credits used per month (columns) against their budget (step line). Same unit, one axis. *@
+@{
+    var n = Labels.Count;
+    var max = Used.Concat(Budget).Where(v => v is not null).Select(v => v!.Value).DefaultIfEmpty(0).Max();
+    var (axisMax, step) = ChartScale.NiceAxis(max);
+    var band = (double)PlotWidth / n;
+    var barWidth = Math.Min(24, band * 0.6);
+    double Center(int i) => PadLeft + band * (i + 0.5);
+    double Y(decimal v) => PadTop + PlotHeight * (1 - (double)(v / axisMax));
+    var baseline = PadTop + PlotHeight;
+}
+<div class="chart">
+    <div class="chart-legend">
+        <span><i class="key-rect" style="background:@UsedColor"></i>Used</span>
+        <span><i class="key-line" style="background:@BudgetColor"></i>Budget</span>
+    </div>
+    <div class="chart-plot">
+        <svg viewBox="0 0 @Width @Height" role="img" aria-label="@AriaLabel">
+            @for (var t = 0m; t <= axisMax; t += step)
+            {
+                var y = Y(t);
+                <line x1="@PadLeft" x2="@(PadLeft + PlotWidth)" y1="@F(y)" y2="@F(y)" class="grid" />
+                <g><text x="@(PadLeft - 8)" y="@F(y + 4)" class="tick" text-anchor="end">@Session.Compact(t)</text></g>
+            }
+            @for (var i = 0; i < n; i++)
+            {
+                if ((n - 1 - i) % LabelEvery(n) != 0) continue;
+                <g><text x="@F(Center(i))" y="@(Height - 8)" class="tick" text-anchor="middle">@Labels[i]</text></g>
+            }
+            @for (var i = 0; i < n; i++)
+            {
+                if (Used[i] is not decimal used || used <= 0) continue;
+                <path d="@Column(Center(i) - barWidth / 2, barWidth, Y(used), baseline)" fill="@UsedColor" />
+            }
+            @* Budget as a step line: flat across each month's band, so it reads as a level, not a trend. *@
+            @for (var i = 0; i < n; i++)
+            {
+                if (Budget[i] is not decimal budget) continue;
+                var y = F(Y(budget));
+                <line x1="@F(PadLeft + band * i + 2)" x2="@F(PadLeft + band * (i + 1) - 2)" y1="@y" y2="@y"
+                      stroke="@BudgetColor" stroke-width="2" stroke-linecap="round" />
+            }
+        </svg>
+        <div class="chart-hover" style="@OverlayStyle">
+            @for (var i = 0; i < n; i++)
+            {
+                var used = Used[i];
+                var budget = Budget[i];
+                <div class="col bar @(i >= n / 2 ? "right" : "")" tabindex="0" aria-label="@Labels[i]">
+                    <div class="tip" role="tooltip">
+                        <div class="tip-title">@(TooltipLabels?[i] ?? Labels[i])</div>
+                        <div class="tip-row"><i class="key-rect" style="background:@UsedColor"></i><strong>@(used is null ? "No data" : Session.Amt(used.Value))</strong><span>used</span></div>
+                        <div class="tip-row"><i class="key-line" style="background:@BudgetColor"></i><strong>@(budget is null ? "–" : Session.Amt(budget.Value))</strong><span>budget</span></div>
+                        @if (used is not null && budget is > 0)
+                        {
+                            <div class="tip-note">@Format.Percent((double)(used.Value / budget.Value * 100)) of budget@(used > budget ? " · over budget" : "")</div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    /// <summary>Re-renders when amounts switch between credits and dollars.</summary>
+    [CascadingParameter(Name = "ShowDollars")] public bool ShowDollars { get; set; }
+
+    [Parameter, EditorRequired] public IReadOnlyList<string> Labels { get; set; } = [];
+    [Parameter] public IReadOnlyList<string>? TooltipLabels { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<decimal?> Used { get; set; } = [];
+    [Parameter, EditorRequired] public IReadOnlyList<decimal?> Budget { get; set; } = [];
+    [Parameter] public string AriaLabel { get; set; } = "Monthly usage";
+
+    private const string UsedColor = "#3987e5";
+    private const string BudgetColor = "#c3c2b7";
+    private const int Width = 480, Height = 250, PadLeft = 40, PadRight = 8, PadTop = 12, PadBottom = 26;
+    private const int PlotWidth = Width - PadLeft - PadRight, PlotHeight = Height - PadTop - PadBottom;
+
+    private static string OverlayStyle =>
+        $"left:{100.0 * PadLeft / Width:0.###}%;right:{100.0 * PadRight / Width:0.###}%;" +
+        $"top:{100.0 * PadTop / Height:0.###}%;bottom:{100.0 * PadBottom / Height:0.###}%";
+
+    /// <summary>Label every month up to 7, then every 2nd, 3rd, ... counting back from the latest month.</summary>
+    private static int LabelEvery(int n) => Math.Max(1, (int)Math.Ceiling(n / 7.0));
+
+    private static string F(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>A column with a 4px rounded top, square at the baseline.</summary>
+    private static string Column(double x, double w, double top, double baseline)
+    {
+        var r = Math.Min(4, Math.Min(w / 2, baseline - top));
+        return $"M{F(x)},{F(baseline)} V{F(top + r)} Q{F(x)},{F(top)} {F(x + r)},{F(top)} " +
+               $"H{F(x + w - r)} Q{F(x + w)},{F(top)} {F(x + w)},{F(top + r)} V{F(baseline)} Z";
+    }
+}
